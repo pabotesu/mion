@@ -1,0 +1,130 @@
+// Package peer manages Peer state and the KnownPeers registry.
+package peer
+
+import (
+	"net/netip"
+	"sync"
+	"time"
+
+	connectip "github.com/quic-go/connect-ip-go"
+
+	"github.com/pabotesu/mion/internal/identity"
+)
+
+// Peer represents a known peer in the MION network.
+// This maps directly to requirements Section 10.
+type Peer struct {
+	// PeerID is the public-key-based identity (requirements 10.1).
+	PeerID identity.PeerID
+
+	// AllowedIPs defines which prefixes this peer is responsible for (requirements 10.2).
+	// Used for outbound routing (dst lookup) and inbound source validation.
+	AllowedIPs []netip.Prefix
+
+	// Endpoint is the current connection target for this peer (requirements 10.3).
+	// If set via config: fixed endpoint, no roaming.
+	// If unset (zero value): dynamic endpoint, roaming allowed.
+	Endpoint netip.AddrPort
+
+	// ConfiguredEndpoint indicates whether Endpoint was set via config file.
+	// When true: endpoint is fixed, roaming disabled.
+	// When false: endpoint is dynamic, updated by observation.
+	ConfiguredEndpoint bool
+
+	// Active indicates whether this peer is currently usable on the data plane (requirements 10.4).
+	Active bool
+
+	// Conn is the CONNECT-IP session with this peer. Nil if not connected.
+	Conn *connectip.Conn
+
+	// PersistentKeepalive is the keepalive interval in seconds. 0 means disabled.
+	PersistentKeepalive int
+
+	// LastHandshake is the time the CONNECT-IP session was established.
+	LastHandshake time.Time
+
+	// LastReceive is the time we last received a valid packet from this peer.
+	LastReceive time.Time
+
+	// EndpointCandidates holds fallback endpoints for failover (requirements §13).
+	// The first entry is the primary; subsequent entries are tried on failure.
+	EndpointCandidates []netip.AddrPort
+
+	// mu protects mutable fields (Endpoint, Active, Conn, timestamps).
+	mu sync.RWMutex
+}
+
+// SetEndpoint updates the peer's endpoint. Only allowed if not a configured endpoint.
+func (p *Peer) SetEndpoint(ep netip.AddrPort) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ConfiguredEndpoint {
+		return false
+	}
+	p.Endpoint = ep
+	return true
+}
+
+// SetActive updates the peer's active status.
+func (p *Peer) SetActive(active bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Active = active
+}
+
+// SetConn sets the CONNECT-IP connection for this peer.
+func (p *Peer) SetConn(conn *connectip.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Conn = conn
+	p.Active = conn != nil
+	if conn != nil {
+		p.LastHandshake = time.Now()
+		p.LastReceive = time.Now()
+	}
+}
+
+// GetConn returns the current CONNECT-IP connection (may be nil).
+func (p *Peer) GetConn() *connectip.Conn {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.Conn
+}
+
+// UpdateLastReceive records that we received a valid packet from this peer.
+func (p *Peer) UpdateLastReceive() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.LastReceive = time.Now()
+}
+
+// GetLastReceive returns the last receive timestamp.
+func (p *Peer) GetLastReceive() time.Time {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.LastReceive
+}
+
+// IsExpired returns true if we haven't received any packet within the given timeout.
+func (p *Peer) IsExpired(timeout time.Duration) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.Active {
+		return true
+	}
+	return time.Since(p.LastReceive) > timeout
+}
+
+// NextEndpointCandidate returns the next failover endpoint candidate,
+// cycling through EndpointCandidates. Returns zero value if none available.
+func (p *Peer) NextEndpointCandidate() netip.AddrPort {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.EndpointCandidates) == 0 {
+		return netip.AddrPort{}
+	}
+	// Rotate: move the first candidate to the end
+	next := p.EndpointCandidates[0]
+	p.EndpointCandidates = append(p.EndpointCandidates[1:], next)
+	return next
+}

@@ -1,0 +1,241 @@
+// Package proxy implements the MION proxy logic.
+// The proxy listens for inbound CONNECT-IP sessions from client peers
+// over a single shared UDP socket.
+package proxy
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/tls"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/netip"
+
+	connectip "github.com/quic-go/connect-ip-go"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/yosida95/uritemplate/v3"
+
+	"github.com/pabotesu/mion/internal/identity"
+	"github.com/pabotesu/mion/internal/peer"
+	"github.com/pabotesu/mion/internal/routing"
+	"github.com/pabotesu/mion/internal/tunnel"
+)
+
+// Proxy manages inbound CONNECT-IP sessions from client peers.
+type Proxy struct {
+	udpConn    *net.UDPConn
+	peers      *peer.KnownPeers
+	allowedIPs *routing.AllowedIPs
+	tun        tunnel.Device
+	tlsConfig  *tls.Config
+	quicConfig *quic.Config
+}
+
+// NewProxy creates a new proxy that listens on the provided shared UDP socket.
+func NewProxy(
+	udpConn *net.UDPConn,
+	peers *peer.KnownPeers,
+	allowedIPs *routing.AllowedIPs,
+	tun tunnel.Device,
+	tlsConfig *tls.Config,
+) *Proxy {
+	return &Proxy{
+		udpConn:    udpConn,
+		peers:      peers,
+		allowedIPs: allowedIPs,
+		tun:        tun,
+		tlsConfig:  tlsConfig,
+		quicConfig: &quic.Config{
+			EnableDatagrams: true,
+		},
+	}
+}
+
+// ListenAndServe starts the HTTP/3 server on the shared UDP socket and
+// handles CONNECT-IP requests from clients.
+func (p *Proxy) ListenAndServe(ctx context.Context) error {
+	// Create a QUIC early listener on the shared UDP socket
+	ln, err := quic.ListenEarly(p.udpConn, p.tlsConfig, p.quicConfig)
+	if err != nil {
+		return fmt.Errorf("proxy: failed to listen QUIC: %w", err)
+	}
+
+	proxy := &connectip.Proxy{}
+	template := uritemplate.MustNew("https://{+authority}/mion")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mion", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[proxy] incoming CONNECT-IP request from %s", r.RemoteAddr)
+
+		// Identify the peer via mTLS certificate
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			log.Printf("[proxy] no client certificate presented")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		pub, ok := r.TLS.PeerCertificates[0].PublicKey.(ed25519.PublicKey)
+		if !ok {
+			log.Printf("[proxy] client certificate key is not Ed25519")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		peerID := identity.PeerIDFromPublicKey(pub)
+		pr := p.peers.Lookup(peerID)
+		if pr == nil {
+			log.Printf("[proxy] unknown peer_id %s", peerID)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		// Parse CONNECT-IP request
+		req, err := connectip.ParseRequest(r, template)
+		if err != nil {
+			log.Printf("[proxy] failed to parse CONNECT-IP request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		// Establish the CONNECT-IP session
+		conn, err := proxy.Proxy(w, req)
+		if err != nil {
+			log.Printf("[proxy] failed to proxy CONNECT-IP: %v", err)
+			return
+		}
+
+		// Register connection with the peer
+		pr.SetConn(conn)
+		log.Printf("[proxy] peer %s connected, starting forwarding", peerID)
+
+		// Start forwarding from this peer's connection to TUN
+		go func() {
+			if err := p.ForwardConnToTUN(pr); err != nil {
+				log.Printf("[proxy] forwarding for peer %s ended: %v", peerID, err)
+			}
+		}()
+	})
+
+	server := &http3.Server{
+		Handler:         mux,
+		EnableDatagrams: true,
+	}
+
+	log.Printf("[proxy] serving on %s", p.udpConn.LocalAddr())
+
+	// Serve using the early listener
+	go func() {
+		if err := server.ServeListener(ln); err != nil {
+			log.Printf("[proxy] server error: %v", err)
+		}
+	}()
+
+	// Wait for context cancellation
+	<-ctx.Done()
+	server.Close()
+	return ctx.Err()
+}
+
+// ForwardTUNToConns reads packets from TUN and sends them to the appropriate
+// peer based on AllowedIPs routing.
+func (p *Proxy) ForwardTUNToConns(ctx context.Context) error {
+	buf := make([]byte, p.tun.MTU())
+	for {
+		n, err := p.tun.Read(buf)
+		if err != nil {
+			return fmt.Errorf("proxy: TUN read error: %w", err)
+		}
+		pkt := buf[:n]
+
+		dstIP := extractDstIP(pkt)
+		if !dstIP.IsValid() {
+			continue
+		}
+
+		peerID, ok := p.allowedIPs.Lookup(dstIP)
+		if !ok {
+			continue
+		}
+
+		pr := p.peers.Lookup(peerID)
+		if pr == nil {
+			continue
+		}
+
+		conn := pr.GetConn()
+		if conn == nil {
+			continue
+		}
+
+		if _, err := conn.WritePacket(pkt); err != nil {
+			log.Printf("[proxy] write to peer %s failed: %v", pr.PeerID, err)
+		}
+	}
+}
+
+// ForwardConnToTUN reads packets from a peer\'s CONNECT-IP connection,
+// validates the source IP, and writes to the TUN device.
+func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
+	conn := pr.GetConn()
+	if conn == nil {
+		return fmt.Errorf("proxy: peer %s has no connection", pr.PeerID)
+	}
+
+	buf := make([]byte, p.tun.MTU())
+	for {
+		n, err := conn.ReadPacket(buf)
+		if err != nil {
+			pr.SetActive(false)
+			return fmt.Errorf("proxy: read from peer %s failed: %w", pr.PeerID, err)
+		}
+		pkt := buf[:n]
+
+		// Update last receive timestamp for keepalive/failover tracking
+		pr.UpdateLastReceive()
+
+		srcIP := extractSrcIP(pkt)
+		if !p.allowedIPs.ValidateSource(srcIP, pr.PeerID) {
+			log.Printf("[proxy] dropping packet from peer %s: src %s not in AllowedIPs", pr.PeerID, srcIP)
+			continue
+		}
+
+		if _, err := p.tun.Write(pkt); err != nil {
+			log.Printf("[proxy] TUN write error: %v", err)
+		}
+	}
+}
+
+// extractDstIP extracts the destination IP from an IP packet header.
+func extractDstIP(pkt []byte) netip.Addr {
+	if len(pkt) < 20 {
+		return netip.Addr{}
+	}
+	switch pkt[0] >> 4 {
+	case 4:
+		return netip.AddrFrom4([4]byte(pkt[16:20]))
+	case 6:
+		if len(pkt) < 40 {
+			return netip.Addr{}
+		}
+		return netip.AddrFrom16([16]byte(pkt[24:40]))
+	}
+	return netip.Addr{}
+}
+
+// extractSrcIP extracts the source IP from an IP packet header.
+func extractSrcIP(pkt []byte) netip.Addr {
+	if len(pkt) < 20 {
+		return netip.Addr{}
+	}
+	switch pkt[0] >> 4 {
+	case 4:
+		return netip.AddrFrom4([4]byte(pkt[12:16]))
+	case 6:
+		if len(pkt) < 40 {
+			return netip.Addr{}
+		}
+		return netip.AddrFrom16([16]byte(pkt[8:24]))
+	}
+	return netip.Addr{}
+}

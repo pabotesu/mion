@@ -1,0 +1,23 @@
+# Binaries
+bin/
+*.exe
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Environment
+.direnv/
+.envrc
+
+# Build artifacts
+scripts/
+
+# Test artifacts
+*.test
+*.out
+coverage.html
