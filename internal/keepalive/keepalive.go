@@ -1,17 +1,19 @@
 // Package keepalive provides per-peer persistent keepalive for MION.
-// It sends empty packets at the configured interval to maintain NAT state
-// and detect connection loss early (requirements §11).
+// QUIC's built-in KeepAlivePeriod handles the actual keepalive packets.
+// This manager monitors peer liveness by tracking receive timestamps
+// (requirements §11).
 package keepalive
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/pabotesu/mion/internal/peer"
 )
 
-// Manager runs keepalive loops for all peers that have PersistentKeepalive > 0.
+// Manager monitors peer liveness. Actual keepalive packets are sent by
+// QUIC's KeepAlivePeriod; this manager only tracks receive timestamps
+// so that the failover manager can detect dead peers.
 type Manager struct {
 	peers *peer.KnownPeers
 }
@@ -21,8 +23,8 @@ func NewManager(peers *peer.KnownPeers) *Manager {
 	return &Manager{peers: peers}
 }
 
-// Run starts the keepalive scheduler. It checks all peers every second
-// and sends keepalive packets to those whose interval has elapsed.
+// Run starts the keepalive monitor. It checks all peers every second
+// and marks inactive peers whose last receive exceeds 2× the interval.
 // It blocks until the context is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(1 * time.Second)
@@ -38,7 +40,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// tick checks each peer and sends a keepalive if needed.
+// tick checks each peer's liveness based on receive timestamps.
 func (m *Manager) tick() {
 	now := time.Now()
 	for _, p := range m.peers.All() {
@@ -51,16 +53,12 @@ func (m *Manager) tick() {
 			continue
 		}
 
+		// If no data received for 2× interval, mark peer as inactive
+		// so failover manager can trigger reconnection.
 		interval := time.Duration(p.PersistentKeepalive) * time.Second
 		lastRecv := p.GetLastReceive()
-
-		// Send keepalive if we haven't received anything within the interval.
-		// This keeps NAT mappings alive even when there's no application traffic.
-		if now.Sub(lastRecv) >= interval {
-			// Send an empty packet as keepalive (same as WireGuard approach)
-			if _, err := conn.WritePacket([]byte{}); err != nil {
-				log.Printf("[keepalive] failed to send keepalive to peer %s: %v", p.PeerID, err)
-			}
+		if !lastRecv.IsZero() && now.Sub(lastRecv) >= 2*interval {
+			p.SetActive(false)
 		}
 	}
 }

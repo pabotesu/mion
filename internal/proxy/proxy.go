@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
@@ -53,6 +54,7 @@ func NewProxy(
 		localPrefix: localPrefix,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
+			KeepAlivePeriod: 25 * time.Second,
 		},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
 	"github.com/quic-go/quic-go"
@@ -40,7 +41,7 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 		tlsConfig:  tlsConfig,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 0, // Managed per-peer via PersistentKeepalive
+			KeepAlivePeriod: 25 * time.Second,
 		},
 	}
 }
