@@ -82,6 +82,15 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 		return fmt.Errorf("client: CONNECT-IP dial to %s failed: %w", p.PeerID, err)
 	}
 
+	// Wait for the proxy to send address assignment and route advertisement.
+	// This ensures the CONNECT-IP session is fully initialized before forwarding.
+	if _, err := ipconn.LocalPrefixes(ctx); err != nil {
+		log.Printf("[client] warning: failed to receive address assignment from %s: %v", p.PeerID, err)
+	}
+	if _, err := ipconn.Routes(ctx); err != nil {
+		log.Printf("[client] warning: failed to receive routes from %s: %v", p.PeerID, err)
+	}
+
 	p.SetConn(ipconn)
 	log.Printf("[client] connected to peer %s at %s", p.PeerID, p.Endpoint)
 

@@ -293,7 +293,7 @@ func (m *Mion) runProxy(ctx context.Context, certDER []byte) error {
 		return fmt.Errorf("mion: proxy TLS config: %w", err)
 	}
 
-	p := proxy.NewProxy(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg)
+	p := proxy.NewProxy(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg, m.cfg.Address)
 
 	// Start keepalive manager (requirements §11)
 	ka := keepalive.NewManager(m.peers)

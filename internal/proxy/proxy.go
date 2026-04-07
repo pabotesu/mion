@@ -26,12 +26,13 @@ import (
 
 // Proxy manages inbound CONNECT-IP sessions from client peers.
 type Proxy struct {
-	udpConn    *net.UDPConn
-	peers      *peer.KnownPeers
-	allowedIPs *routing.AllowedIPs
-	tun        tunnel.Device
-	tlsConfig  *tls.Config
-	quicConfig *quic.Config
+	udpConn     *net.UDPConn
+	peers       *peer.KnownPeers
+	allowedIPs  *routing.AllowedIPs
+	tun         tunnel.Device
+	tlsConfig   *tls.Config
+	quicConfig  *quic.Config
+	localPrefix netip.Prefix // overlay network prefix (e.g. 100.100.0.0/24)
 }
 
 // NewProxy creates a new proxy that listens on the provided shared UDP socket.
@@ -41,13 +42,15 @@ func NewProxy(
 	allowedIPs *routing.AllowedIPs,
 	tun tunnel.Device,
 	tlsConfig *tls.Config,
+	localPrefix netip.Prefix,
 ) *Proxy {
 	return &Proxy{
-		udpConn:    udpConn,
-		peers:      peers,
-		allowedIPs: allowedIPs,
-		tun:        tun,
-		tlsConfig:  tlsConfig,
+		udpConn:     udpConn,
+		peers:       peers,
+		allowedIPs:  allowedIPs,
+		tun:         tun,
+		tlsConfig:   tlsConfig,
+		localPrefix: localPrefix,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
 		},
@@ -107,6 +110,28 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		if err != nil {
 			log.Printf("[proxy] failed to proxy CONNECT-IP: %v", err)
 			return
+		}
+
+		// Initialize CONNECT-IP session: assign addresses and advertise routes.
+		// The client's AllowedIPs become its assigned addresses (what it can send from),
+		// and we advertise the overlay prefix as the route (what it can send to).
+		ctxReq := r.Context()
+		if err := conn.AssignAddresses(ctxReq, pr.AllowedIPs); err != nil {
+			log.Printf("[proxy] failed to assign addresses to peer %s: %v", peerID, err)
+			conn.Close()
+			return
+		}
+		if p.localPrefix.IsValid() {
+			route := connectip.IPRoute{
+				StartIP:    p.localPrefix.Masked().Addr(),
+				EndIP:      lastIP(p.localPrefix),
+				IPProtocol: 0, // all protocols
+			}
+			if err := conn.AdvertiseRoute(ctxReq, []connectip.IPRoute{route}); err != nil {
+				log.Printf("[proxy] failed to advertise route to peer %s: %v", peerID, err)
+				conn.Close()
+				return
+			}
 		}
 
 		// Register connection with the peer
@@ -242,4 +267,34 @@ func extractSrcIP(pkt []byte) netip.Addr {
 		return netip.AddrFrom16([16]byte(pkt[8:24]))
 	}
 	return netip.Addr{}
+}
+
+// lastIP returns the last IP address in a prefix (broadcast address for IPv4).
+func lastIP(prefix netip.Prefix) netip.Addr {
+	addr := prefix.Masked().Addr()
+	bits := prefix.Bits()
+	if addr.Is4() {
+		a := addr.As4()
+		hostBits := 32 - bits
+		for i := 3; i >= 0 && hostBits > 0; i-- {
+			fill := hostBits
+			if fill > 8 {
+				fill = 8
+			}
+			a[i] |= byte((1 << fill) - 1)
+			hostBits -= fill
+		}
+		return netip.AddrFrom4(a)
+	}
+	a := addr.As16()
+	hostBits := 128 - bits
+	for i := 15; i >= 0 && hostBits > 0; i-- {
+		fill := hostBits
+		if fill > 8 {
+			fill = 8
+		}
+		a[i] |= byte((1 << fill) - 1)
+		hostBits -= fill
+	}
+	return netip.AddrFrom16(a)
 }
