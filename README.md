@@ -204,9 +204,9 @@ Client                           Proxy
 
 | 機能 | 説明 |
 |---|---|
-| **Keepalive** | `PersistentKeepalive` 間隔で空パケットを送信し NAT state を維持 |
-| **Roaming** | 動的 endpoint のピアからのアドレス変化を検知し自動更新 |
-| **Failover** | 30 秒間パケット未受信で dead 判定、`EndpointCandidates` から代替に切替・再接続 |
+| **Keepalive** | QUIC レベルの `KeepAlivePeriod` (25秒) で NAT state を維持 |
+| **Roaming** | 動的endpoint のピアからのアドレス変化を検知し自動更新 |
+| **自動再接続** | 接続断を検知すると指数バックオフ (2s〔30s) で自動リトライ |
 
 ## テスト
 
@@ -214,13 +214,13 @@ Client                           Proxy
 go test ./...
 ```
 
-現在 48 テスト (identity: 4, config: 5, auth: 7, routing: 10, peer: 7, ipc: 5, roaming: 4, failover: 4, peer rotation: 2) がすべて PASS しています。
+現在 47 テスト (config: 5, auth: 7, identity: 4, routing: 10, peer: 8, ipc: 5, roaming: 4, failover: 3, selfcert: 1) がすべて PASS しています。
 
 ## 開発フェーズ
 
 - [x] **Phase 1**: 最小接続成立 — Proxy/Client, HTTP/3+MASQUE+CONNECT-IP, mTLS, KnownPeers, AllowedIPs, TUN, UAPI
-- [x] **Phase 2**: 接続維持 — Keepalive, Roaming, Endpoint Failover
-- [ ] **Phase 3**: 接続安定化 — Linux 実機での TUN/routing 検証、NAT 環境テスト
+- [x] **Phase 2**: 接続維持 — Keepalive, Roaming, 自動再接続
+- [x] **Phase 3**: 接続安定化 — Linux 実機での TUN/ping 検証、Proxy 再起動時の自動復帰確認
 
 ## 依存ライブラリ
 
