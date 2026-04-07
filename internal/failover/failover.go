@@ -53,16 +53,24 @@ func (m *Manager) Run(ctx context.Context) error {
 // check inspects all peers and triggers failover for dead ones.
 func (m *Manager) check(ctx context.Context) {
 	for _, p := range m.peers.All() {
+		conn := p.GetConn()
+
+		// Only trigger failover if the peer was connected but the
+		// connection has been lost (conn == nil && was previously active),
+		// or if the peer is marked inactive by the keepalive monitor.
+		if conn != nil {
+			// Connection object still exists — QUIC session is alive.
+			// No failover needed regardless of LastReceive.
+			continue
+		}
+
 		if !p.Active {
+			// Already inactive and no connection — nothing to failover.
 			continue
 		}
 
-		if !p.IsExpired(m.timeout) {
-			continue
-		}
-
-		log.Printf("[failover] peer %s appears dead (no packet for %s), attempting failover",
-			p.PeerID, m.timeout)
+		// Peer is marked active but has no connection — connection was lost.
+		log.Printf("[failover] peer %s connection lost, attempting failover", p.PeerID)
 
 		// Try next endpoint candidate
 		next := p.NextEndpointCandidate()

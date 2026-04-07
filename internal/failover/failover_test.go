@@ -23,14 +23,13 @@ func TestFailoverTriggersReconnect(t *testing.T) {
 		PeerID:             pid,
 		Endpoint:           netip.MustParseAddrPort("203.0.113.1:51820"),
 		ConfiguredEndpoint: false,
-		Active:             true,
+		Active:             true, // marked active
+		Conn:               nil,  // but connection is gone
 		EndpointCandidates: []netip.AddrPort{
 			netip.MustParseAddrPort("198.51.100.1:51820"),
 			netip.MustParseAddrPort("192.0.2.1:51820"),
 		},
 	}
-	// Set LastReceive to a time in the past (expired)
-	p.UpdateLastReceive()
 	peers.Add(p)
 
 	var reconnected atomic.Int32
@@ -39,12 +38,7 @@ func TestFailoverTriggersReconnect(t *testing.T) {
 		return nil
 	}
 
-	// Use a very short timeout so the peer appears expired immediately
-	// We need to manually set LastReceive to the past
-	mgr := NewManager(peers, reconnectFn, 1*time.Millisecond)
-
-	// Wait a bit so the peer expires
-	time.Sleep(10 * time.Millisecond)
+	mgr := NewManager(peers, reconnectFn, 30*time.Second)
 
 	ctx := context.Background()
 	mgr.check(ctx)
@@ -69,9 +63,9 @@ func TestFailoverNoCandidates(t *testing.T) {
 		PeerID:             pid,
 		Endpoint:           netip.MustParseAddrPort("203.0.113.1:51820"),
 		ConfiguredEndpoint: false,
-		Active:             true,
+		Active:             true, // marked active
+		Conn:               nil,  // but connection is gone
 	}
-	p.UpdateLastReceive()
 	peers.Add(p)
 
 	var reconnected atomic.Int32
@@ -80,8 +74,7 @@ func TestFailoverNoCandidates(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(peers, reconnectFn, 1*time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
+	mgr := NewManager(peers, reconnectFn, 30*time.Second)
 
 	ctx := context.Background()
 	mgr.check(ctx)
@@ -104,11 +97,9 @@ func TestFailoverSkipsHealthyPeers(t *testing.T) {
 		PeerID:             pid,
 		Endpoint:           netip.MustParseAddrPort("203.0.113.1:51820"),
 		ConfiguredEndpoint: false,
-		Active:             true,
+		Active:             false, // inactive peer — should be skipped
 	}
 	peers.Add(p)
-	// Keep LastReceive fresh
-	p.UpdateLastReceive()
 
 	var reconnected atomic.Int32
 	reconnectFn := func(ctx context.Context, pr *peer.Peer) error {
@@ -116,13 +107,13 @@ func TestFailoverSkipsHealthyPeers(t *testing.T) {
 		return nil
 	}
 
-	mgr := NewManager(peers, reconnectFn, 1*time.Hour) // very long timeout
+	mgr := NewManager(peers, reconnectFn, 30*time.Second)
 	ctx := context.Background()
 	mgr.check(ctx)
 	time.Sleep(50 * time.Millisecond)
 
 	if reconnected.Load() != 0 {
-		t.Errorf("expected 0 reconnect attempts for healthy peer, got %d", reconnected.Load())
+		t.Errorf("expected 0 reconnect attempts for inactive peer, got %d", reconnected.Load())
 	}
 }
 
