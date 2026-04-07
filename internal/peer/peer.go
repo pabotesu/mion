@@ -46,10 +46,6 @@ type Peer struct {
 	// LastReceive is the time we last received a valid packet from this peer.
 	LastReceive time.Time
 
-	// EndpointCandidates holds fallback endpoints for failover (requirements §13).
-	// The first entry is the primary; subsequent entries are tried on failure.
-	EndpointCandidates []netip.AddrPort
-
 	// mu protects mutable fields (Endpoint, Active, Conn, timestamps).
 	mu sync.RWMutex
 }
@@ -113,18 +109,4 @@ func (p *Peer) IsExpired(timeout time.Duration) bool {
 		return true
 	}
 	return time.Since(p.LastReceive) > timeout
-}
-
-// NextEndpointCandidate returns the next failover endpoint candidate,
-// cycling through EndpointCandidates. Returns zero value if none available.
-func (p *Peer) NextEndpointCandidate() netip.AddrPort {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.EndpointCandidates) == 0 {
-		return netip.AddrPort{}
-	}
-	// Rotate: move the first candidate to the end
-	next := p.EndpointCandidates[0]
-	p.EndpointCandidates = append(p.EndpointCandidates[1:], next)
-	return next
 }

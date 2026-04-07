@@ -70,18 +70,7 @@ func (m *Manager) check(ctx context.Context) {
 		}
 
 		// Peer is marked active but has no connection — connection was lost.
-		log.Printf("[failover] peer %s connection lost, attempting failover", p.PeerID)
-
-		// Try next endpoint candidate
-		next := p.NextEndpointCandidate()
-		if !next.IsValid() {
-			// No candidates; try to reconnect with current endpoint
-			log.Printf("[failover] peer %s has no alternative endpoints, retrying current", p.PeerID)
-		} else {
-			old := p.Endpoint
-			p.SetEndpoint(next)
-			log.Printf("[failover] peer %s switching endpoint: %s -> %s", p.PeerID, old, next)
-		}
+		log.Printf("[failover] peer %s connection lost, attempting reconnect", p.PeerID)
 
 		// Close existing connection
 		p.SetConn(nil)
