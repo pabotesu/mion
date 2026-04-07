@@ -100,6 +100,7 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 
 // DialAllPeers dials all peers that have a configured endpoint.
 // For each successfully connected peer, it starts a ForwardConnToTUN goroutine.
+// Peers that fail to connect are retried in the background with exponential backoff.
 func (c *Client) DialAllPeers(ctx context.Context) error {
 	for _, p := range c.peers.All() {
 		if !p.Endpoint.IsValid() {
@@ -107,6 +108,8 @@ func (c *Client) DialAllPeers(ctx context.Context) error {
 		}
 		if err := c.DialPeer(ctx, p); err != nil {
 			log.Printf("[client] failed to dial peer %s: %v", p.PeerID, err)
+			// Retry connection in background
+			go c.retryDial(ctx, p)
 			continue
 		}
 		go func(pr *peer.Peer) {
@@ -116,6 +119,38 @@ func (c *Client) DialAllPeers(ctx context.Context) error {
 		}(p)
 	}
 	return nil
+}
+
+// retryDial retries dialing a peer with exponential backoff until success or context cancellation.
+func (c *Client) retryDial(ctx context.Context, p *peer.Peer) {
+	backoff := 2 * time.Second
+	const maxBackoff = 30 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		log.Printf("[client] retrying dial to peer %s at %s", p.PeerID, p.Endpoint)
+		if err := c.DialPeer(ctx, p); err != nil {
+			log.Printf("[client] retry dial to peer %s failed: %v", p.PeerID, err)
+			backoff = backoff * 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+
+		log.Printf("[client] retry succeeded for peer %s", p.PeerID)
+		go func() {
+			if err := c.ForwardConnToTUN(p); err != nil {
+				log.Printf("[client] forwarding for peer %s ended: %v", p.PeerID, err)
+			}
+		}()
+		return
+	}
 }
 
 // ForwardTUNToConn reads packets from TUN, looks up the destination peer via
