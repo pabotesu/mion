@@ -64,7 +64,6 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	}
 
 	proxy := &connectip.Proxy{}
-	template := uritemplate.MustNew("https://{+authority}/mion")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mion", func(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +88,11 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+
+		// Build a fixed URI template from the request's :authority header.
+		// connect-ip-go rejects templates with variables (treats them as
+		// IP flow forwarding), so we must use a concrete URL.
+		template := uritemplate.MustNew(fmt.Sprintf("https://%s/mion", r.Host))
 
 		// Parse CONNECT-IP request
 		req, err := connectip.ParseRequest(r, template)

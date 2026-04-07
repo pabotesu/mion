@@ -5,6 +5,7 @@ package tunnel
 import (
 	"fmt"
 	"log"
+	"net"
 	"sync"
 )
 
@@ -57,6 +58,12 @@ func (s *StubDevice) Close() error {
 // InjectPacket sends a packet into the Read channel (for testing).
 func (s *StubDevice) InjectPacket(pkt []byte) {
 	s.ch <- pkt
+}
+
+// ConfigureAddress is a no-op on non-Linux platforms.
+func ConfigureAddress(devName string, addr net.IPNet) error {
+	log.Printf("[stub-tun] ConfigureAddress(%s, %s) skipped (non-Linux)", devName, addr.String())
+	return nil
 }
 
 // NewDevice creates a stub device on non-Linux platforms.

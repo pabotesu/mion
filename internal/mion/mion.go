@@ -205,6 +205,15 @@ func (m *Mion) Run(ctx context.Context) error {
 	m.ctx = ctx
 	defer m.Close()
 
+	// Configure TUN address from the [Interface] Address field
+	if m.cfg.Address.IsValid() {
+		ipNet := prefixToIPNet(m.cfg.Address)
+		if err := tunnel.ConfigureAddress(m.tun.Name(), ipNet); err != nil {
+			return fmt.Errorf("mion: failed to configure TUN address: %w", err)
+		}
+		log.Printf("[mion] configured %s with address %s", m.tun.Name(), m.cfg.Address)
+	}
+
 	// Generate self-signed certificate from our private key
 	_, certDER, err := identity.SelfSignedCert(m.cfg.PrivateKey)
 	if err != nil {
@@ -307,4 +316,26 @@ func (m *Mion) runProxy(ctx context.Context, certDER []byte) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// prefixToIPNet converts a netip.Prefix to net.IPNet for use with
+// tunnel.ConfigureAddress which uses the older net.IPNet type.
+func prefixToIPNet(prefix netip.Prefix) net.IPNet {
+	addr := prefix.Addr()
+	ip := addr.As16()
+	var netIP net.IP
+	if addr.Is4() {
+		netIP = net.IP(ip[12:16]).To4()
+	} else {
+		netIP = net.IP(ip[:])
+	}
+	bits := prefix.Bits()
+	var totalBits int
+	if addr.Is4() {
+		totalBits = 32
+	} else {
+		totalBits = 128
+	}
+	mask := net.CIDRMask(bits, totalBits)
+	return net.IPNet{IP: netIP, Mask: mask}
 }
