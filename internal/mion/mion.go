@@ -10,11 +10,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
-	"time"
 
 	"github.com/pabotesu/mion/internal/auth"
 	"github.com/pabotesu/mion/internal/client"
-	"github.com/pabotesu/mion/internal/failover"
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/keepalive"
 	"github.com/pabotesu/mion/internal/peer"
@@ -251,25 +249,21 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 	ka := keepalive.NewManager(m.peers)
 	go ka.Run(ctx)
 
-	// Start failover monitor (requirements §13)
-	// Reconnect function wraps client.DialPeer
-	reconnectFn := func(rctx context.Context, p *peer.Peer) error {
+	// Reconnect function for UAPI endpoint changes.
+	// Normal reconnection is handled by retryDial inside client.DialAllPeers.
+	m.reconnectFn = func(rctx context.Context, p *peer.Peer) error {
 		if err := c.DialPeer(rctx, p); err != nil {
 			return err
 		}
-		// Restart forwarding for the reconnected peer
+		p.SetActive(true)
 		go func() {
 			if fwErr := c.ForwardConnToTUN(p); fwErr != nil {
-				log.Printf("[mion] forwarding for reconnected peer %s ended: %v", p.PeerID, fwErr)
+				log.Printf("[client] peer %s disconnected after UAPI reconnect, will retry", p.PeerID)
+				c.RetryDial(rctx, p)
 			}
 		}()
 		return nil
 	}
-	// Store reconnect function for use by ReconnectPeer (UAPI endpoint changes)
-	m.reconnectFn = reconnectFn
-
-	fo := failover.NewManager(m.peers, reconnectFn, 30*time.Second)
-	go fo.Run(ctx)
 
 	// Run TUN → Conn forwarding (blocks until context done or error)
 	errCh := make(chan error, 1)

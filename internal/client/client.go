@@ -107,22 +107,24 @@ func (c *Client) DialAllPeers(ctx context.Context) error {
 			continue
 		}
 		if err := c.DialPeer(ctx, p); err != nil {
-			log.Printf("[client] failed to dial peer %s: %v", p.PeerID, err)
-			// Retry connection in background
-			go c.retryDial(ctx, p)
+			log.Printf("[client] peer %s not yet reachable, will retry in background", p.PeerID)
+			go c.RetryDial(ctx, p)
 			continue
 		}
+		p.SetActive(true)
 		go func(pr *peer.Peer) {
 			if err := c.ForwardConnToTUN(pr); err != nil {
-				log.Printf("[client] forwarding for peer %s ended: %v", pr.PeerID, err)
+				log.Printf("[client] peer %s disconnected, will retry", pr.PeerID)
+				c.RetryDial(ctx, pr)
 			}
 		}(p)
 	}
 	return nil
 }
 
-// retryDial retries dialing a peer with exponential backoff until success or context cancellation.
-func (c *Client) retryDial(ctx context.Context, p *peer.Peer) {
+// RetryDial retries dialing a peer with exponential backoff until success or context cancellation.
+// When connected, it blocks on ForwardConnToTUN; if that ends, it loops back to retry.
+func (c *Client) RetryDial(ctx context.Context, p *peer.Peer) {
 	backoff := 2 * time.Second
 	const maxBackoff = 30 * time.Second
 
@@ -133,9 +135,9 @@ func (c *Client) retryDial(ctx context.Context, p *peer.Peer) {
 		case <-time.After(backoff):
 		}
 
-		log.Printf("[client] retrying dial to peer %s at %s", p.PeerID, p.Endpoint)
+		log.Printf("[client] dialing peer %s at %s ...", p.PeerID, p.Endpoint)
 		if err := c.DialPeer(ctx, p); err != nil {
-			log.Printf("[client] retry dial to peer %s failed: %v", p.PeerID, err)
+			log.Printf("[client] peer %s unreachable, next attempt in %s", p.PeerID, backoff*2)
 			backoff = backoff * 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff
@@ -143,13 +145,13 @@ func (c *Client) retryDial(ctx context.Context, p *peer.Peer) {
 			continue
 		}
 
-		log.Printf("[client] retry succeeded for peer %s", p.PeerID)
-		go func() {
-			if err := c.ForwardConnToTUN(p); err != nil {
-				log.Printf("[client] forwarding for peer %s ended: %v", p.PeerID, err)
-			}
-		}()
-		return
+		log.Printf("[client] connected to peer %s", p.PeerID)
+		p.SetActive(true)
+		// Block on forwarding; if it ends, the peer went away — loop back to retry
+		if err := c.ForwardConnToTUN(p); err != nil {
+			log.Printf("[client] peer %s disconnected, will retry", p.PeerID)
+		}
+		backoff = 2 * time.Second // reset backoff for next retry
 	}
 }
 
@@ -201,6 +203,7 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 	for {
 		n, err := conn.ReadPacket(buf)
 		if err != nil {
+			p.SetConn(nil)
 			p.SetActive(false)
 			return fmt.Errorf("client: read from peer %s failed: %w", p.PeerID, err)
 		}
