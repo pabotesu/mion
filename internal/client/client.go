@@ -145,7 +145,6 @@ func (c *Client) RetryDial(ctx context.Context, p *peer.Peer) {
 			continue
 		}
 
-		log.Printf("[client] connected to peer %s", p.PeerID)
 		p.SetActive(true)
 		// Block on forwarding; if it ends, the peer went away — loop back to retry
 		if err := c.ForwardConnToTUN(p); err != nil {
