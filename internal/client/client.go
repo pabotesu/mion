@@ -24,6 +24,7 @@ import (
 // Client manages outbound CONNECT-IP sessions to proxy peers.
 type Client struct {
 	udpConn    *net.UDPConn
+	transport  *quic.Transport
 	peers      *peer.KnownPeers
 	allowedIPs *routing.AllowedIPs
 	tun        tunnel.Device
@@ -35,6 +36,7 @@ type Client struct {
 func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing.AllowedIPs, tun tunnel.Device, tlsConfig *tls.Config) *Client {
 	return &Client{
 		udpConn:    udpConn,
+		transport:  &quic.Transport{Conn: udpConn},
 		peers:      peers,
 		allowedIPs: allowedIPs,
 		tun:        tun,
@@ -58,7 +60,7 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 		Port: int(p.Endpoint.Port()),
 	}
 
-	qconn, err := quic.Dial(ctx, c.udpConn, addr, c.tlsConfig, c.quicConfig)
+	qconn, err := c.transport.Dial(ctx, addr, c.tlsConfig, c.quicConfig)
 	if err != nil {
 		return fmt.Errorf("client: QUIC dial to %s failed: %w", p.Endpoint, err)
 	}
