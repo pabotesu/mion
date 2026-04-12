@@ -108,40 +108,59 @@ func (c *Client) DialAllPeers(ctx context.Context) error {
 		}
 		if err := c.DialPeer(ctx, p); err != nil {
 			log.Printf("[client] peer %s not yet reachable, will retry in background", p.PeerID)
-			go c.RetryDial(ctx, p)
+			c.StartRetry(ctx, p)
 			continue
 		}
 		p.SetActive(true)
 		go func(pr *peer.Peer) {
 			if err := c.ForwardConnToTUN(pr); err != nil {
 				log.Printf("[client] peer %s disconnected, will retry", pr.PeerID)
-				c.RetryDial(ctx, pr)
+				c.StartRetry(ctx, pr)
 			}
 		}(p)
 	}
 	return nil
 }
 
+// StartRetry starts a background retry loop for a peer if one is not already running.
+func (c *Client) StartRetry(ctx context.Context, p *peer.Peer) {
+	if !p.TryStartRetry() {
+		return
+	}
+	go c.RetryDial(ctx, p)
+}
+
 // RetryDial retries dialing a peer with exponential backoff until success or context cancellation.
 // When connected, it blocks on ForwardConnToTUN; if that ends, it loops back to retry.
 func (c *Client) RetryDial(ctx context.Context, p *peer.Peer) {
+	defer p.StopRetry()
+
 	backoff := 2 * time.Second
 	const maxBackoff = 30 * time.Second
 
 	for {
+		if p.GetConn() != nil {
+			return
+		}
+
+		nextAttempt := backoff
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(nextAttempt):
+		}
+
+		if ctx.Err() != nil {
+			return
 		}
 
 		log.Printf("[client] dialing peer %s at %s ...", p.PeerID, p.Endpoint)
 		if err := c.DialPeer(ctx, p); err != nil {
-			log.Printf("[client] peer %s unreachable, next attempt in %s", p.PeerID, backoff*2)
 			backoff = backoff * 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff
 			}
+			log.Printf("[client] peer %s unreachable, next attempt in %s", p.PeerID, backoff)
 			continue
 		}
 
@@ -202,8 +221,7 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 	for {
 		n, err := conn.ReadPacket(buf)
 		if err != nil {
-			p.SetConn(nil)
-			p.SetActive(false)
+			p.ClearConnIf(conn)
 			return fmt.Errorf("client: read from peer %s failed: %w", p.PeerID, err)
 		}
 		pkt := buf[:n]

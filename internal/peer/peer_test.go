@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"testing"
 
+	connectip "github.com/quic-go/connect-ip-go"
+
 	"github.com/pabotesu/mion/internal/identity"
 )
 
@@ -122,5 +124,56 @@ func TestPeerConnLifecycle(t *testing.T) {
 	p.SetConn(nil)
 	if p.Active {
 		t.Fatal("expected inactive after SetConn(nil)")
+	}
+}
+
+func TestPeerRetryLifecycle(t *testing.T) {
+	pid := makePeerID("peer1")
+	p := &Peer{PeerID: pid}
+
+	if !p.TryStartRetry() {
+		t.Fatal("expected first TryStartRetry to succeed")
+	}
+	if p.TryStartRetry() {
+		t.Fatal("expected second TryStartRetry to fail while retry is active")
+	}
+
+	p.StopRetry()
+	if !p.TryStartRetry() {
+		t.Fatal("expected TryStartRetry to succeed after StopRetry")
+	}
+}
+
+func TestPeerClearConnIf(t *testing.T) {
+	pid := makePeerID("peer1")
+	p := &Peer{PeerID: pid}
+
+	conn := &connectip.Conn{}
+	p.SetConn(conn)
+
+	if !p.ClearConnIf(conn) {
+		t.Fatal("expected ClearConnIf to clear matching connection")
+	}
+	if p.GetConn() != nil {
+		t.Fatal("expected conn to be nil after ClearConnIf")
+	}
+	if p.Active {
+		t.Fatal("expected inactive after ClearConnIf")
+	}
+}
+
+func TestPeerClearConnIfMismatch(t *testing.T) {
+	pid := makePeerID("peer1")
+	p := &Peer{PeerID: pid}
+
+	conn := &connectip.Conn{}
+	other := &connectip.Conn{}
+	p.SetConn(conn)
+
+	if p.ClearConnIf(other) {
+		t.Fatal("expected ClearConnIf to be false for non-matching conn")
+	}
+	if p.GetConn() != conn {
+		t.Fatal("expected original conn to remain set")
 	}
 }

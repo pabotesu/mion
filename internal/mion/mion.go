@@ -259,7 +259,7 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 		go func() {
 			if fwErr := c.ForwardConnToTUN(p); fwErr != nil {
 				log.Printf("[client] peer %s disconnected after UAPI reconnect, will retry", p.PeerID)
-				c.RetryDial(rctx, p)
+				c.StartRetry(rctx, p)
 			}
 		}()
 		return nil

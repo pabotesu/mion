@@ -48,6 +48,9 @@ type Peer struct {
 
 	// mu protects mutable fields (Endpoint, Active, Conn, timestamps).
 	mu sync.RWMutex
+
+	// retrying indicates whether a background retry loop is currently running.
+	retrying bool
 }
 
 // SetEndpoint updates the peer's endpoint. Only allowed if not a configured endpoint.
@@ -80,6 +83,20 @@ func (p *Peer) SetConn(conn *connectip.Conn) {
 	}
 }
 
+// ClearConnIf clears the peer connection only when the current connection
+// matches conn. This avoids stale forwarding goroutines clearing a newly
+// established connection.
+func (p *Peer) ClearConnIf(conn *connectip.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Conn != conn {
+		return false
+	}
+	p.Conn = nil
+	p.Active = false
+	return true
+}
+
 // GetConn returns the current CONNECT-IP connection (may be nil).
 func (p *Peer) GetConn() *connectip.Conn {
 	p.mu.RLock()
@@ -109,4 +126,23 @@ func (p *Peer) IsExpired(timeout time.Duration) bool {
 		return true
 	}
 	return time.Since(p.LastReceive) > timeout
+}
+
+// TryStartRetry marks this peer as having an active retry loop.
+// It returns false when a retry loop is already running.
+func (p *Peer) TryStartRetry() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retrying {
+		return false
+	}
+	p.retrying = true
+	return true
+}
+
+// StopRetry clears the retry-loop marker for this peer.
+func (p *Peer) StopRetry() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.retrying = false
 }

@@ -137,6 +137,9 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		}
 
 		// Register connection with the peer
+		if old := pr.GetConn(); old != nil && old != conn {
+			_ = old.Close()
+		}
 		pr.SetConn(conn)
 		log.Printf("[proxy] peer %s connected, starting forwarding", peerID)
 
@@ -217,7 +220,7 @@ func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
 	for {
 		n, err := conn.ReadPacket(buf)
 		if err != nil {
-			pr.SetActive(false)
+			pr.ClearConnIf(conn)
 			return fmt.Errorf("proxy: read from peer %s failed: %w", pr.PeerID, err)
 		}
 		pkt := buf[:n]
