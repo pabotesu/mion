@@ -147,6 +147,13 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				log.Printf("[uapi] added peer %s", currentPeer.PeerID)
 				addedPeers++
 				appliedPeers++
+				if currentPeer.Endpoint.IsValid() {
+					if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
+						log.Printf("[uapi] connect trigger for new peer %s failed: %v", currentPeer.PeerID, err)
+					} else {
+						reconnectedPeers++
+					}
+				}
 			}
 		} else {
 			appliedPeers++

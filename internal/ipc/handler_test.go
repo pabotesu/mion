@@ -28,7 +28,8 @@ func (m *mockState) Peers() *peer.KnownPeers         { return m.peers }
 func (m *mockState) AllowedIPs() *routing.AllowedIPs { return m.allowedIPs }
 
 type mockMutator struct {
-	state *mockState
+	state          *mockState
+	reconnectCalls []identity.PeerID
 }
 
 func (m *mockMutator) AddPeer(p *peer.Peer) error {
@@ -47,7 +48,7 @@ func (m *mockMutator) RemovePeer(id identity.PeerID) {
 }
 
 func (m *mockMutator) ReconnectPeer(id identity.PeerID) error {
-	// no-op in tests
+	m.reconnectCalls = append(m.reconnectCalls, id)
 	return nil
 }
 
@@ -55,7 +56,7 @@ func makePeerID(s string) identity.PeerID {
 	return sha256.Sum256([]byte(s))
 }
 
-func newTestHandler() (*Handler, *mockState) {
+func newTestHandler() (*Handler, *mockState, *mockMutator) {
 	st := &mockState{
 		peerID:     makePeerID("self"),
 		listenPort: 51820,
@@ -63,11 +64,11 @@ func newTestHandler() (*Handler, *mockState) {
 		allowedIPs: routing.NewAllowedIPs(),
 	}
 	mut := &mockMutator{state: st}
-	return NewHandler(st, mut), st
+	return NewHandler(st, mut), st, mut
 }
 
 func TestHandleGetEmpty(t *testing.T) {
-	h, _ := newTestHandler()
+	h, _, _ := newTestHandler()
 
 	var buf strings.Builder
 	w := bufio.NewWriter(&buf)
@@ -84,7 +85,7 @@ func TestHandleGetEmpty(t *testing.T) {
 }
 
 func TestHandleGetWithPeers(t *testing.T) {
-	h, st := newTestHandler()
+	h, st, _ := newTestHandler()
 
 	pid := makePeerID("peer1")
 	p := &peer.Peer{
@@ -122,7 +123,7 @@ func TestHandleGetWithPeers(t *testing.T) {
 }
 
 func TestHandleSetAddPeer(t *testing.T) {
-	h, st := newTestHandler()
+	h, st, mut := newTestHandler()
 
 	pid := makePeerID("newpeer")
 	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
@@ -145,6 +146,9 @@ func TestHandleSetAddPeer(t *testing.T) {
 	if !strings.Contains(output, "added_peers=1") {
 		t.Errorf("expected added_peers=1, got:\n%s", output)
 	}
+	if !strings.Contains(output, "reconnected_peers=1") {
+		t.Errorf("expected reconnected_peers=1, got:\n%s", output)
+	}
 
 	p := st.peers.Lookup(pid)
 	if p == nil {
@@ -159,10 +163,13 @@ func TestHandleSetAddPeer(t *testing.T) {
 	if p.PersistentKeepalive != 30 {
 		t.Errorf("PersistentKeepalive = %d", p.PersistentKeepalive)
 	}
+	if len(mut.reconnectCalls) != 1 || mut.reconnectCalls[0] != pid {
+		t.Errorf("expected reconnect to be called once for new peer, got %v", mut.reconnectCalls)
+	}
 }
 
 func TestHandleSetMultiPeerAdd(t *testing.T) {
-	h, st := newTestHandler()
+	h, st, _ := newTestHandler()
 
 	pid1 := makePeerID("multi-peer-1")
 	pid2 := makePeerID("multi-peer-2")
@@ -198,7 +205,7 @@ func TestHandleSetMultiPeerAdd(t *testing.T) {
 }
 
 func TestHandleSetRemovePeer(t *testing.T) {
-	h, st := newTestHandler()
+	h, st, _ := newTestHandler()
 
 	pid := makePeerID("existing")
 	st.peers.Add(&peer.Peer{
@@ -226,7 +233,7 @@ func TestHandleSetRemovePeer(t *testing.T) {
 }
 
 func TestHandleConnGet(t *testing.T) {
-	h, _ := newTestHandler()
+	h, _, _ := newTestHandler()
 
 	clientConn, serverConn := net.Pipe()
 

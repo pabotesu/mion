@@ -226,7 +226,7 @@ func cmdSet(ifname string, args []string) error {
 	}
 
 	// Build a UAPI set request
-	req := "set=1\n" + strings.Join(args, "\n")
+	req := "set=1\n" + strings.Join(args, "\n") + "\n"
 	lines, err := uapiRequest(ifname, req)
 	if err != nil {
 		return err
