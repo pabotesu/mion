@@ -2,6 +2,9 @@
 package peer
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"fmt"
 	"net/netip"
 	"sync"
 	"time"
@@ -14,6 +17,10 @@ import (
 // Peer represents a known peer in the MION network.
 // This maps directly to requirements Section 10.
 type Peer struct {
+	// PublicKey is the Ed25519 public key for this peer.
+	// It may be nil when the peer was provisioned only by peer_id.
+	PublicKey ed25519.PublicKey
+
 	// PeerID is the public-key-based identity (requirements 10.1).
 	PeerID identity.PeerID
 
@@ -81,6 +88,28 @@ func (p *Peer) SetConn(conn *connectip.Conn) {
 		p.LastHandshake = time.Now()
 		p.LastReceive = time.Now()
 	}
+}
+
+// SetPublicKey stores the peer's Ed25519 public key.
+func (p *Peer) SetPublicKey(pub ed25519.PublicKey) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(pub) != ed25519.PublicKeySize {
+		p.PublicKey = nil
+		return
+	}
+	p.PublicKey = append(ed25519.PublicKey(nil), pub...)
+}
+
+// DisplayID returns a human-readable identifier for logs.
+// It includes both public_key and peer_id when the public key is known.
+func (p *Peer) DisplayID() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.PublicKey) == ed25519.PublicKeySize {
+		return fmt.Sprintf("public_key=%s peer_id=%s", base64.StdEncoding.EncodeToString(p.PublicKey), p.PeerID)
+	}
+	return fmt.Sprintf("peer_id=%s", p.PeerID)
 }
 
 // ClearConnIf clears the peer connection only when the current connection

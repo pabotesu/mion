@@ -75,7 +75,8 @@ Key generation:
   mion genkey | tee privatekey | mion pubkey > publickey
 
 Runtime set keys:
-	public_key=<base64>                 - select or create peer context
+	public_key=<base64>                 - select/create peer by Ed25519 public key
+	peer_id=<base64>                    - select/create peer by explicit PeerID
 	endpoint=<host:port>                - set peer endpoint (triggers reconnect)
 	allowed_ip=<cidr>                   - add allowed prefix to peer
 	persistent_keepalive_interval=<sec> - set keepalive interval
@@ -203,8 +204,15 @@ func cmdShow(ifname string) error {
 			if inPeer {
 				fmt.Println() // separator between peers
 			}
-			fmt.Printf("\npeer: %s\n", val)
+			fmt.Printf("\npeer:\n")
+			fmt.Printf("  public key: %s\n", val)
 			inPeer = true
+		case "peer_id":
+			if !inPeer {
+				fmt.Printf("\npeer:\n")
+				inPeer = true
+			}
+			fmt.Printf("  peer id: %s\n", val)
 		case "endpoint":
 			fmt.Printf("  endpoint: %s\n", val)
 		case "allowed_ip":

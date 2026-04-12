@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/pabotesu/mion/internal/identity"
@@ -83,7 +84,7 @@ func verifyPeerCertificate(rawCerts [][]byte, knownPeers *peer.KnownPeers) error
 	}
 	peerID := identity.PeerIDFromPublicKey(pub)
 	if knownPeers.Lookup(peerID) == nil {
-		return fmt.Errorf("auth: unknown peer_id %s", peerID)
+		return fmt.Errorf("auth: unknown peer public_key=%s peer_id=%s", base64.StdEncoding.EncodeToString(pub), peerID)
 	}
 	return nil
 }

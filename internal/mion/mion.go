@@ -127,7 +127,7 @@ func (m *Mion) AddPeer(p *peer.Peer) error {
 	for _, prefix := range p.AllowedIPs {
 		m.allowedIPs.Insert(prefix, p.PeerID)
 	}
-	log.Printf("[mion] added peer %s with %d allowed prefixes", p.PeerID, len(p.AllowedIPs))
+	log.Printf("[mion] added peer %s with %d allowed prefixes", p.DisplayID(), len(p.AllowedIPs))
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 
 	// Close existing connection
 	p.SetConn(nil)
-	log.Printf("[mion] disconnecting peer %s for endpoint change", id)
+	log.Printf("[mion] disconnecting peer %s for endpoint change", p.DisplayID())
 
 	if m.reconnectFn == nil {
 		// Proxy role or not yet running — no active reconnect needed
@@ -163,9 +163,9 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 			return
 		}
 		if err := m.reconnectFn(ctx, p); err != nil {
-			log.Printf("[mion] reconnect to peer %s failed: %v", id, err)
+			log.Printf("[mion] reconnect to peer %s failed: %v", p.DisplayID(), err)
 		} else {
-			log.Printf("[mion] reconnected to peer %s at %s", id, p.Endpoint)
+			log.Printf("[mion] reconnected to peer %s at %s", p.DisplayID(), p.Endpoint)
 		}
 	}()
 
@@ -258,7 +258,7 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 		p.SetActive(true)
 		go func() {
 			if fwErr := c.ForwardConnToTUN(p); fwErr != nil {
-				log.Printf("[client] peer %s disconnected after UAPI reconnect, will retry", p.PeerID)
+				log.Printf("[client] peer %s disconnected after UAPI reconnect, will retry", p.DisplayID())
 				c.StartRetry(rctx, p)
 			}
 		}()

@@ -52,7 +52,7 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 // All dials go through the shared udpConn (same socket requirement).
 func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 	if !p.Endpoint.IsValid() {
-		return fmt.Errorf("client: peer %s has no endpoint configured", p.PeerID)
+		return fmt.Errorf("client: peer %s has no endpoint configured", p.DisplayID())
 	}
 
 	addr := &net.UDPAddr{
@@ -82,20 +82,20 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 
 	ipconn, _, err := connectip.Dial(ctx, hconn, template)
 	if err != nil {
-		return fmt.Errorf("client: CONNECT-IP dial to %s failed: %w", p.PeerID, err)
+		return fmt.Errorf("client: CONNECT-IP dial to %s failed: %w", p.DisplayID(), err)
 	}
 
 	// Wait for the proxy to send address assignment and route advertisement.
 	// This ensures the CONNECT-IP session is fully initialized before forwarding.
 	if _, err := ipconn.LocalPrefixes(ctx); err != nil {
-		log.Printf("[client] warning: failed to receive address assignment from %s: %v", p.PeerID, err)
+		log.Printf("[client] warning: failed to receive address assignment from %s: %v", p.DisplayID(), err)
 	}
 	if _, err := ipconn.Routes(ctx); err != nil {
-		log.Printf("[client] warning: failed to receive routes from %s: %v", p.PeerID, err)
+		log.Printf("[client] warning: failed to receive routes from %s: %v", p.DisplayID(), err)
 	}
 
 	p.SetConn(ipconn)
-	log.Printf("[client] connected to peer %s at %s", p.PeerID, p.Endpoint)
+	log.Printf("[client] connected to peer %s at %s", p.DisplayID(), p.Endpoint)
 
 	return nil
 }
@@ -109,14 +109,14 @@ func (c *Client) DialAllPeers(ctx context.Context) error {
 			continue
 		}
 		if err := c.DialPeer(ctx, p); err != nil {
-			log.Printf("[client] peer %s not yet reachable, will retry in background", p.PeerID)
+			log.Printf("[client] peer %s not yet reachable, will retry in background", p.DisplayID())
 			c.StartRetry(ctx, p)
 			continue
 		}
 		p.SetActive(true)
 		go func(pr *peer.Peer) {
 			if err := c.ForwardConnToTUN(pr); err != nil {
-				log.Printf("[client] peer %s disconnected, will retry", pr.PeerID)
+				log.Printf("[client] peer %s disconnected, will retry", pr.DisplayID())
 				c.StartRetry(ctx, pr)
 			}
 		}(p)
@@ -156,20 +156,20 @@ func (c *Client) RetryDial(ctx context.Context, p *peer.Peer) {
 			return
 		}
 
-		log.Printf("[client] dialing peer %s at %s ...", p.PeerID, p.Endpoint)
+		log.Printf("[client] dialing peer %s at %s ...", p.DisplayID(), p.Endpoint)
 		if err := c.DialPeer(ctx, p); err != nil {
 			backoff = backoff * 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff
 			}
-			log.Printf("[client] peer %s unreachable, next attempt in %s", p.PeerID, backoff)
+			log.Printf("[client] peer %s unreachable, next attempt in %s", p.DisplayID(), backoff)
 			continue
 		}
 
 		p.SetActive(true)
 		// Block on forwarding; if it ends, the peer went away — loop back to retry
 		if err := c.ForwardConnToTUN(p); err != nil {
-			log.Printf("[client] peer %s disconnected, will retry", p.PeerID)
+			log.Printf("[client] peer %s disconnected, will retry", p.DisplayID())
 		}
 		backoff = 2 * time.Second // reset backoff for next retry
 	}
@@ -207,7 +207,7 @@ func (c *Client) ForwardTUNToConn(ctx context.Context) error {
 		}
 
 		if _, err := conn.WritePacket(pkt); err != nil {
-			log.Printf("[client] write to peer %s failed: %v", p.PeerID, err)
+			log.Printf("[client] write to peer %s failed: %v", p.DisplayID(), err)
 		}
 	}
 }
@@ -216,7 +216,7 @@ func (c *Client) ForwardTUNToConn(ctx context.Context) error {
 func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 	conn := p.GetConn()
 	if conn == nil {
-		return fmt.Errorf("client: peer %s has no connection", p.PeerID)
+		return fmt.Errorf("client: peer %s has no connection", p.DisplayID())
 	}
 
 	buf := make([]byte, c.tun.MTU())
@@ -224,7 +224,7 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 		n, err := conn.ReadPacket(buf)
 		if err != nil {
 			p.ClearConnIf(conn)
-			return fmt.Errorf("client: read from peer %s failed: %w", p.PeerID, err)
+			return fmt.Errorf("client: read from peer %s failed: %w", p.DisplayID(), err)
 		}
 		pkt := buf[:n]
 
@@ -233,7 +233,7 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 
 		srcIP := extractSrcIP(pkt)
 		if !c.allowedIPs.ValidateSource(srcIP, p.PeerID) {
-			log.Printf("[client] dropping packet from peer %s: src %s not in AllowedIPs", p.PeerID, srcIP)
+			log.Printf("[client] dropping packet from peer %s: src %s not in AllowedIPs", p.DisplayID(), srcIP)
 			continue
 		}
 

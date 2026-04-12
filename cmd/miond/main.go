@@ -127,6 +127,7 @@ func peerFromConfig(pc config.PeerConfig) (*peer.Peer, error) {
 	peerID := identity.PeerIDFromPublicKey(pubKey)
 
 	p := &peer.Peer{
+		PublicKey:  pubKey,
 		PeerID:     peerID,
 		AllowedIPs: pc.AllowedIPs,
 	}

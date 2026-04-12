@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -89,8 +90,10 @@ func (h *Handler) handleGet(w *bufio.Writer) {
 
 	// Peer info
 	for _, p := range h.state.Peers().All() {
-		// public_key is the peer_id in base64
-		fmt.Fprintf(w, "public_key=%s\n", base64.StdEncoding.EncodeToString(p.PeerID[:]))
+		if len(p.PublicKey) == ed25519.PublicKeySize {
+			fmt.Fprintf(w, "public_key=%s\n", base64.StdEncoding.EncodeToString(p.PublicKey))
+		}
+		fmt.Fprintf(w, "peer_id=%s\n", p.PeerID)
 
 		if p.Endpoint.IsValid() {
 			fmt.Fprintf(w, "endpoint=%s\n", p.Endpoint)
@@ -129,6 +132,37 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 	reconnectedPeers := 0
 	appliedPeers := 0
 
+	resolvePeerFromPublicKeyField := func(value string) (identity.PeerID, ed25519.PublicKey, error) {
+		decoded, err := base64.StdEncoding.DecodeString(value)
+		if err != nil || len(decoded) != ed25519.PublicKeySize {
+			return identity.PeerID{}, nil, fmt.Errorf("invalid public_key")
+		}
+		pub := ed25519.PublicKey(decoded)
+
+		// Legacy compatibility: public_key historically accepted peer_id strings.
+		var direct identity.PeerID
+		copy(direct[:], decoded)
+		derived := identity.PeerIDFromPublicKey(pub)
+
+		directExists := h.state.Peers().Lookup(direct) != nil
+		derivedExists := h.state.Peers().Lookup(derived) != nil
+
+		switch {
+		case directExists && !derivedExists:
+			return direct, nil, nil
+		case derivedExists && !directExists:
+			return derived, pub, nil
+		case directExists && derivedExists:
+			if direct == derived {
+				return direct, pub, nil
+			}
+			return identity.PeerID{}, nil, fmt.Errorf("ambiguous public_key: matches both peer_id and hashed public key")
+		default:
+			// Default to current semantics: public key input.
+			return derived, pub, nil
+		}
+	}
+
 	flushCurrentPeer := func() {
 		if currentPeer == nil {
 			return
@@ -144,12 +178,12 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 			if err := h.mutator.AddPeer(currentPeer); err != nil {
 				errResult = err
 			} else {
-				log.Printf("[uapi] added peer %s", currentPeer.PeerID)
+				log.Printf("[uapi] added peer %s", currentPeer.DisplayID())
 				addedPeers++
 				appliedPeers++
 				if currentPeer.Endpoint.IsValid() {
 					if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
-						log.Printf("[uapi] connect trigger for new peer %s failed: %v", currentPeer.PeerID, err)
+						log.Printf("[uapi] connect trigger for new peer %s failed: %v", currentPeer.DisplayID(), err)
 					} else {
 						reconnectedPeers++
 					}
@@ -158,7 +192,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 		} else {
 			appliedPeers++
 			if currentEndpointChanged {
-				log.Printf("[uapi] endpoint changed for peer %s, triggering reconnect", currentPeer.PeerID)
+				log.Printf("[uapi] endpoint changed for peer %s, triggering reconnect", currentPeer.DisplayID())
 				if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
 					log.Printf("[uapi] reconnect trigger failed: %v", err)
 				} else {
@@ -194,25 +228,42 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 		key, value := parts[0], parts[1]
 
 		switch key {
-		case "public_key":
+		case "public_key", "peer_id":
 			flushCurrentPeer()
 
 			// Start a new peer context
-			peerIDBytes, err := base64.StdEncoding.DecodeString(value)
-			if err != nil || len(peerIDBytes) != 32 {
-				errResult = fmt.Errorf("invalid public_key")
-				continue
-			}
 			var peerID identity.PeerID
-			copy(peerID[:], peerIDBytes)
+			var pubKey ed25519.PublicKey
+			if key == "public_key" {
+				id, pub, err := resolvePeerFromPublicKeyField(value)
+				if err != nil {
+					errResult = err
+					continue
+				}
+				peerID = id
+				pubKey = pub
+			} else {
+				id, err := identity.PeerIDFromBase64(value)
+				if err != nil {
+					errResult = fmt.Errorf("invalid peer_id: %w", err)
+					continue
+				}
+				peerID = id
+			}
 
 			// Check if peer already exists
 			existing := h.state.Peers().Lookup(peerID)
 			if existing != nil {
 				currentPeer = existing
 				currentPeerExists = true
+				if len(existing.PublicKey) == 0 && len(pubKey) == ed25519.PublicKeySize {
+					existing.SetPublicKey(pubKey)
+				}
 			} else {
 				currentPeer = &peer.Peer{PeerID: peerID}
+				if len(pubKey) == ed25519.PublicKeySize {
+					currentPeer.SetPublicKey(pubKey)
+				}
 				currentPeerExists = false
 			}
 			currentPeerModified = false
@@ -222,7 +273,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 			if currentPeer != nil && value == "true" {
 				if h.state.Peers().Lookup(currentPeer.PeerID) != nil {
 					h.mutator.RemovePeer(currentPeer.PeerID)
-					log.Printf("[uapi] removed peer %s", currentPeer.PeerID)
+					log.Printf("[uapi] removed peer %s", currentPeer.DisplayID())
 					removedPeers++
 					appliedPeers++
 				}

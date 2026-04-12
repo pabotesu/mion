@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -89,7 +90,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		peerID := identity.PeerIDFromPublicKey(pub)
 		pr := p.peers.Lookup(peerID)
 		if pr == nil {
-			log.Printf("[proxy] unknown peer_id %s", peerID)
+			log.Printf("[proxy] unknown peer public_key=%s peer_id=%s", base64.StdEncoding.EncodeToString(pub), peerID)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -119,7 +120,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 		// and we advertise the overlay prefix as the route (what it can send to).
 		ctxReq := r.Context()
 		if err := conn.AssignAddresses(ctxReq, pr.AllowedIPs); err != nil {
-			log.Printf("[proxy] failed to assign addresses to peer %s: %v", peerID, err)
+			log.Printf("[proxy] failed to assign addresses to peer %s: %v", pr.DisplayID(), err)
 			conn.Close()
 			return
 		}
@@ -130,7 +131,7 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 				IPProtocol: 0, // all protocols
 			}
 			if err := conn.AdvertiseRoute(ctxReq, []connectip.IPRoute{route}); err != nil {
-				log.Printf("[proxy] failed to advertise route to peer %s: %v", peerID, err)
+				log.Printf("[proxy] failed to advertise route to peer %s: %v", pr.DisplayID(), err)
 				conn.Close()
 				return
 			}
@@ -141,12 +142,12 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 			_ = old.Close()
 		}
 		pr.SetConn(conn)
-		log.Printf("[proxy] peer %s connected, starting forwarding", peerID)
+		log.Printf("[proxy] peer %s connected, starting forwarding", pr.DisplayID())
 
 		// Start forwarding from this peer's connection to TUN
 		go func() {
 			if err := p.ForwardConnToTUN(pr); err != nil {
-				log.Printf("[proxy] forwarding for peer %s ended: %v", peerID, err)
+				log.Printf("[proxy] forwarding for peer %s ended: %v", pr.DisplayID(), err)
 			}
 		}()
 	})
@@ -203,7 +204,7 @@ func (p *Proxy) ForwardTUNToConns(ctx context.Context) error {
 		}
 
 		if _, err := conn.WritePacket(pkt); err != nil {
-			log.Printf("[proxy] write to peer %s failed: %v", pr.PeerID, err)
+			log.Printf("[proxy] write to peer %s failed: %v", pr.DisplayID(), err)
 		}
 	}
 }
@@ -213,7 +214,7 @@ func (p *Proxy) ForwardTUNToConns(ctx context.Context) error {
 func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
 	conn := pr.GetConn()
 	if conn == nil {
-		return fmt.Errorf("proxy: peer %s has no connection", pr.PeerID)
+		return fmt.Errorf("proxy: peer %s has no connection", pr.DisplayID())
 	}
 
 	buf := make([]byte, p.tun.MTU())
@@ -221,7 +222,7 @@ func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
 		n, err := conn.ReadPacket(buf)
 		if err != nil {
 			pr.ClearConnIf(conn)
-			return fmt.Errorf("proxy: read from peer %s failed: %w", pr.PeerID, err)
+			return fmt.Errorf("proxy: read from peer %s failed: %w", pr.DisplayID(), err)
 		}
 		pkt := buf[:n]
 
@@ -230,7 +231,7 @@ func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
 
 		srcIP := extractSrcIP(pkt)
 		if !p.allowedIPs.ValidateSource(srcIP, pr.PeerID) {
-			log.Printf("[proxy] dropping packet from peer %s: src %s not in AllowedIPs", pr.PeerID, srcIP)
+			log.Printf("[proxy] dropping packet from peer %s: src %s not in AllowedIPs", pr.DisplayID(), srcIP)
 			continue
 		}
 

@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -56,6 +57,13 @@ func makePeerID(s string) identity.PeerID {
 	return sha256.Sum256([]byte(s))
 }
 
+func makePublicKey(s string) ed25519.PublicKey {
+	sum := sha256.Sum256([]byte(s))
+	pub := make([]byte, ed25519.PublicKeySize)
+	copy(pub, sum[:])
+	return ed25519.PublicKey(pub)
+}
+
 func newTestHandler() (*Handler, *mockState, *mockMutator) {
 	st := &mockState{
 		peerID:     makePeerID("self"),
@@ -87,8 +95,10 @@ func TestHandleGetEmpty(t *testing.T) {
 func TestHandleGetWithPeers(t *testing.T) {
 	h, st, _ := newTestHandler()
 
-	pid := makePeerID("peer1")
+	pub := makePublicKey("peer1")
+	pid := identity.PeerIDFromPublicKey(pub)
 	p := &peer.Peer{
+		PublicKey:           pub,
 		PeerID:              pid,
 		AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")},
 		Endpoint:            netip.MustParseAddrPort("203.0.113.1:51820"),
@@ -104,9 +114,12 @@ func TestHandleGetWithPeers(t *testing.T) {
 	w.Flush()
 
 	output := buf.String()
-	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
-	if !strings.Contains(output, "public_key="+pidB64) {
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	if !strings.Contains(output, "public_key="+pubB64) {
 		t.Errorf("expected public_key in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "peer_id="+pid.String()) {
+		t.Errorf("expected peer_id in output, got:\n%s", output)
 	}
 	if !strings.Contains(output, "endpoint=203.0.113.1:51820") {
 		t.Errorf("expected endpoint in output, got:\n%s", output)
@@ -125,10 +138,11 @@ func TestHandleGetWithPeers(t *testing.T) {
 func TestHandleSetAddPeer(t *testing.T) {
 	h, st, mut := newTestHandler()
 
-	pid := makePeerID("newpeer")
-	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
+	pub := makePublicKey("newpeer")
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	pid := identity.PeerIDFromPublicKey(pub)
 
-	input := fmt.Sprintf("public_key=%s\nendpoint=203.0.113.2:51820\nallowed_ip=10.0.1.0/24\npersistent_keepalive_interval=30\n\n", pidB64)
+	input := fmt.Sprintf("public_key=%s\nendpoint=203.0.113.2:51820\nallowed_ip=10.0.1.0/24\npersistent_keepalive_interval=30\n\n", pubB64)
 	r := bufio.NewReader(strings.NewReader(input))
 	var buf strings.Builder
 	w := bufio.NewWriter(&buf)
@@ -163,6 +177,9 @@ func TestHandleSetAddPeer(t *testing.T) {
 	if p.PersistentKeepalive != 30 {
 		t.Errorf("PersistentKeepalive = %d", p.PersistentKeepalive)
 	}
+	if got := base64.StdEncoding.EncodeToString(p.PublicKey); got != pubB64 {
+		t.Errorf("PublicKey = %s, want %s", got, pubB64)
+	}
 	if len(mut.reconnectCalls) != 1 || mut.reconnectCalls[0] != pid {
 		t.Errorf("expected reconnect to be called once for new peer, got %v", mut.reconnectCalls)
 	}
@@ -171,15 +188,17 @@ func TestHandleSetAddPeer(t *testing.T) {
 func TestHandleSetMultiPeerAdd(t *testing.T) {
 	h, st, _ := newTestHandler()
 
-	pid1 := makePeerID("multi-peer-1")
-	pid2 := makePeerID("multi-peer-2")
-	pid1B64 := base64.StdEncoding.EncodeToString(pid1[:])
-	pid2B64 := base64.StdEncoding.EncodeToString(pid2[:])
+	pub1 := makePublicKey("multi-peer-1")
+	pub2 := makePublicKey("multi-peer-2")
+	pid1 := identity.PeerIDFromPublicKey(pub1)
+	pid2 := identity.PeerIDFromPublicKey(pub2)
+	pub1B64 := base64.StdEncoding.EncodeToString(pub1)
+	pub2B64 := base64.StdEncoding.EncodeToString(pub2)
 
 	input := fmt.Sprintf(
 		"public_key=%s\nendpoint=203.0.113.10:51820\nallowed_ip=10.10.0.1/32\npublic_key=%s\nendpoint=203.0.113.11:51820\nallowed_ip=10.10.0.2/32\n\n",
-		pid1B64,
-		pid2B64,
+		pub1B64,
+		pub2B64,
 	)
 	r := bufio.NewReader(strings.NewReader(input))
 	var buf strings.Builder
@@ -201,6 +220,82 @@ func TestHandleSetMultiPeerAdd(t *testing.T) {
 	}
 	if st.peers.Lookup(pid2) == nil {
 		t.Fatal("expected second peer to be added")
+	}
+}
+
+func TestHandleSetPublicKeyDerivesPeerID(t *testing.T) {
+	h, st, _ := newTestHandler()
+
+	pub := make([]byte, ed25519.PublicKeySize)
+	for i := range pub {
+		pub[i] = byte(i + 1)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	pid := identity.PeerIDFromPublicKey(ed25519.PublicKey(pub))
+
+	input := fmt.Sprintf("public_key=%s\nallowed_ip=10.9.0.1/32\n\n", pubB64)
+	r := bufio.NewReader(strings.NewReader(input))
+	var buf strings.Builder
+	w := bufio.NewWriter(&buf)
+
+	h.handleSet(r, w)
+	w.Flush()
+
+	if !strings.Contains(buf.String(), "errno=0") {
+		t.Fatalf("expected errno=0, got:\n%s", buf.String())
+	}
+	if st.peers.Lookup(pid) == nil {
+		t.Fatal("expected peer to be added using derived PeerID")
+	}
+}
+
+func TestHandleSetPeerIDExplicit(t *testing.T) {
+	h, st, _ := newTestHandler()
+
+	pid := makePeerID("peerid-explicit")
+	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
+
+	input := fmt.Sprintf("peer_id=%s\nallowed_ip=10.8.0.1/32\n\n", pidB64)
+	r := bufio.NewReader(strings.NewReader(input))
+	var buf strings.Builder
+	w := bufio.NewWriter(&buf)
+
+	h.handleSet(r, w)
+	w.Flush()
+
+	if !strings.Contains(buf.String(), "errno=0") {
+		t.Fatalf("expected errno=0, got:\n%s", buf.String())
+	}
+	if st.peers.Lookup(pid) == nil {
+		t.Fatal("expected peer to be added using peer_id field")
+	}
+}
+
+func TestHandleSetPublicKeyLegacyPeerIDCompatibility(t *testing.T) {
+	h, st, _ := newTestHandler()
+
+	pid := makePeerID("legacy-peer-id")
+	p := &peer.Peer{PeerID: pid}
+	st.peers.Add(p)
+
+	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
+	input := fmt.Sprintf("public_key=%s\nendpoint=203.0.113.9:51820\n\n", pidB64)
+	r := bufio.NewReader(strings.NewReader(input))
+	var buf strings.Builder
+	w := bufio.NewWriter(&buf)
+
+	h.handleSet(r, w)
+	w.Flush()
+
+	if !strings.Contains(buf.String(), "errno=0") {
+		t.Fatalf("expected errno=0, got:\n%s", buf.String())
+	}
+	updated := st.peers.Lookup(pid)
+	if updated == nil {
+		t.Fatal("expected existing peer to remain present")
+	}
+	if updated.Endpoint != netip.MustParseAddrPort("203.0.113.9:51820") {
+		t.Fatalf("expected endpoint update, got %s", updated.Endpoint)
 	}
 }
 
