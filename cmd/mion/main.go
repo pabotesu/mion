@@ -73,6 +73,32 @@ func usage() {
 
 Key generation:
   mion genkey | tee privatekey | mion pubkey > publickey
+
+Runtime set keys:
+	public_key=<base64>                 - select or create peer context
+	endpoint=<host:port>                - set peer endpoint (triggers reconnect)
+	allowed_ip=<cidr>                   - add allowed prefix to peer
+	persistent_keepalive_interval=<sec> - set keepalive interval
+	remove=true                         - remove selected peer
+
+Examples:
+	# Add a new peer
+	mion set mion0 \
+		public_key=BASE64PUBKEY \
+		endpoint=203.0.113.10:4443 \
+		allowed_ip=100.100.0.10/32 \
+		persistent_keepalive_interval=25
+
+	# Update existing peer endpoint (runtime reconnect)
+	mion set mion0 public_key=BASE64PUBKEY endpoint=198.51.100.5:4443
+
+	# Remove a peer
+	mion set mion0 public_key=BASE64PUBKEY remove=true
+
+	# Batch update multiple peers in one command
+	mion set mion0 \
+		public_key=PEER_A endpoint=203.0.113.11:4443 allowed_ip=100.100.0.11/32 \
+		public_key=PEER_B endpoint=203.0.113.12:4443 allowed_ip=100.100.0.12/32
 `)
 }
 
@@ -206,13 +232,45 @@ func cmdSet(ifname string, args []string) error {
 		return err
 	}
 
+	status := ""
+	errorText := ""
+	summary := map[string]string{}
+
 	// Check for errno=0 (success)
 	for _, line := range lines {
-		if strings.HasPrefix(line, "errno=") && line != "errno=0" {
-			return fmt.Errorf("daemon returned error: %s", line)
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, val := parts[0], parts[1]
+		switch key {
+		case "errno":
+			if val != "0" {
+				if errorText == "" {
+					return fmt.Errorf("daemon returned error: errno=%s", val)
+				}
+				return fmt.Errorf("daemon returned error: %s", errorText)
+			}
+		case "status":
+			status = val
+		case "error":
+			errorText = val
+		case "applied_peers", "added_peers", "removed_peers", "reconnected_peers":
+			summary[key] = val
 		}
 	}
 
-	fmt.Printf("Configuration updated for %s\n", ifname)
+	fmt.Printf("Configuration updated for %s", ifname)
+	if status != "" {
+		fmt.Printf(" (status=%s)", status)
+	}
+	fmt.Printf("\n")
+
+	if len(summary) > 0 {
+		fmt.Printf("  applied peers: %s\n", summary["applied_peers"])
+		fmt.Printf("  added peers: %s\n", summary["added_peers"])
+		fmt.Printf("  removed peers: %s\n", summary["removed_peers"])
+		fmt.Printf("  reconnected peers: %s\n", summary["reconnected_peers"])
+	}
 	return nil
 }

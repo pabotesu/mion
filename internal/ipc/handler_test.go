@@ -139,6 +139,12 @@ func TestHandleSetAddPeer(t *testing.T) {
 	if !strings.Contains(output, "errno=0") {
 		t.Errorf("expected errno=0, got:\n%s", output)
 	}
+	if !strings.Contains(output, "status=ok") {
+		t.Errorf("expected status=ok, got:\n%s", output)
+	}
+	if !strings.Contains(output, "added_peers=1") {
+		t.Errorf("expected added_peers=1, got:\n%s", output)
+	}
 
 	p := st.peers.Lookup(pid)
 	if p == nil {
@@ -152,6 +158,42 @@ func TestHandleSetAddPeer(t *testing.T) {
 	}
 	if p.PersistentKeepalive != 30 {
 		t.Errorf("PersistentKeepalive = %d", p.PersistentKeepalive)
+	}
+}
+
+func TestHandleSetMultiPeerAdd(t *testing.T) {
+	h, st := newTestHandler()
+
+	pid1 := makePeerID("multi-peer-1")
+	pid2 := makePeerID("multi-peer-2")
+	pid1B64 := base64.StdEncoding.EncodeToString(pid1[:])
+	pid2B64 := base64.StdEncoding.EncodeToString(pid2[:])
+
+	input := fmt.Sprintf(
+		"public_key=%s\nendpoint=203.0.113.10:51820\nallowed_ip=10.10.0.1/32\npublic_key=%s\nendpoint=203.0.113.11:51820\nallowed_ip=10.10.0.2/32\n\n",
+		pid1B64,
+		pid2B64,
+	)
+	r := bufio.NewReader(strings.NewReader(input))
+	var buf strings.Builder
+	w := bufio.NewWriter(&buf)
+
+	h.handleSet(r, w)
+	w.Flush()
+
+	output := buf.String()
+	if !strings.Contains(output, "errno=0") {
+		t.Errorf("expected errno=0, got:\n%s", output)
+	}
+	if !strings.Contains(output, "added_peers=2") {
+		t.Errorf("expected added_peers=2, got:\n%s", output)
+	}
+
+	if st.peers.Lookup(pid1) == nil {
+		t.Fatal("expected first peer to be added")
+	}
+	if st.peers.Lookup(pid2) == nil {
+		t.Fatal("expected second peer to be added")
 	}
 }
 

@@ -119,8 +119,52 @@ func (h *Handler) handleGet(w *bufio.Writer) {
 // Supports adding/removing peers and updating peer configuration.
 func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 	var currentPeer *peer.Peer
+	currentPeerExists := false
+	currentPeerModified := false
+	currentEndpointChanged := false
 	var errResult error
-	endpointChanged := false
+
+	addedPeers := 0
+	removedPeers := 0
+	reconnectedPeers := 0
+	appliedPeers := 0
+
+	flushCurrentPeer := func() {
+		if currentPeer == nil {
+			return
+		}
+		if !currentPeerModified {
+			currentPeer = nil
+			currentPeerExists = false
+			currentEndpointChanged = false
+			return
+		}
+
+		if !currentPeerExists {
+			if err := h.mutator.AddPeer(currentPeer); err != nil {
+				errResult = err
+			} else {
+				log.Printf("[uapi] added peer %s", currentPeer.PeerID)
+				addedPeers++
+				appliedPeers++
+			}
+		} else {
+			appliedPeers++
+			if currentEndpointChanged {
+				log.Printf("[uapi] endpoint changed for peer %s, triggering reconnect", currentPeer.PeerID)
+				if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
+					log.Printf("[uapi] reconnect trigger failed: %v", err)
+				} else {
+					reconnectedPeers++
+				}
+			}
+		}
+
+		currentPeer = nil
+		currentPeerExists = false
+		currentPeerModified = false
+		currentEndpointChanged = false
+	}
 
 	for {
 		line, err := r.ReadString('\n')
@@ -144,6 +188,8 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 
 		switch key {
 		case "public_key":
+			flushCurrentPeer()
+
 			// Start a new peer context
 			peerIDBytes, err := base64.StdEncoding.DecodeString(value)
 			if err != nil || len(peerIDBytes) != 32 {
@@ -157,15 +203,26 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 			existing := h.state.Peers().Lookup(peerID)
 			if existing != nil {
 				currentPeer = existing
+				currentPeerExists = true
 			} else {
 				currentPeer = &peer.Peer{PeerID: peerID}
+				currentPeerExists = false
 			}
+			currentPeerModified = false
+			currentEndpointChanged = false
 
 		case "remove":
 			if currentPeer != nil && value == "true" {
-				h.mutator.RemovePeer(currentPeer.PeerID)
-				log.Printf("[uapi] removed peer %s", currentPeer.PeerID)
+				if h.state.Peers().Lookup(currentPeer.PeerID) != nil {
+					h.mutator.RemovePeer(currentPeer.PeerID)
+					log.Printf("[uapi] removed peer %s", currentPeer.PeerID)
+					removedPeers++
+					appliedPeers++
+				}
 				currentPeer = nil
+				currentPeerExists = false
+				currentPeerModified = false
+				currentEndpointChanged = false
 			}
 
 		case "endpoint":
@@ -178,10 +235,11 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				continue
 			}
 			if currentPeer.Endpoint != ep {
-				endpointChanged = true
+				currentEndpointChanged = true
 			}
 			currentPeer.Endpoint = ep
 			currentPeer.ConfiguredEndpoint = true
+			currentPeerModified = true
 
 		case "allowed_ip":
 			if currentPeer == nil {
@@ -193,6 +251,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				continue
 			}
 			currentPeer.AllowedIPs = append(currentPeer.AllowedIPs, prefix)
+			currentPeerModified = true
 
 		case "persistent_keepalive_interval":
 			if currentPeer == nil {
@@ -204,31 +263,23 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				continue
 			}
 			currentPeer.PersistentKeepalive = secs
+			currentPeerModified = true
 		}
 	}
 
-	// If we have a new peer that hasn't been added yet, add it
-	if currentPeer != nil {
-		existing := h.state.Peers().Lookup(currentPeer.PeerID)
-		if existing == nil {
-			if err := h.mutator.AddPeer(currentPeer); err != nil {
-				errResult = err
-			} else {
-				log.Printf("[uapi] added peer %s", currentPeer.PeerID)
-			}
-		} else if endpointChanged {
-			// Existing peer's endpoint was changed — trigger reconnection
-			log.Printf("[uapi] endpoint changed for peer %s, triggering reconnect", currentPeer.PeerID)
-			if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
-				log.Printf("[uapi] reconnect trigger failed: %v", err)
-			}
-		}
-	}
+	flushCurrentPeer()
 
 	if errResult != nil {
 		log.Printf("[uapi] set error: %v", errResult)
+		fmt.Fprintf(w, "status=error\n")
+		fmt.Fprintf(w, "error=%s\n", errResult.Error())
 		fmt.Fprintf(w, "errno=1\n")
 	} else {
+		fmt.Fprintf(w, "status=ok\n")
+		fmt.Fprintf(w, "applied_peers=%d\n", appliedPeers)
+		fmt.Fprintf(w, "added_peers=%d\n", addedPeers)
+		fmt.Fprintf(w, "removed_peers=%d\n", removedPeers)
+		fmt.Fprintf(w, "reconnected_peers=%d\n", reconnectedPeers)
 		fmt.Fprintf(w, "errno=0\n")
 	}
 	fmt.Fprintf(w, "\n")
