@@ -3,7 +3,7 @@
 **MASQUE-based L3 IP Overlay Network**
 
 mion は、HTTP/3 上の MASQUE CONNECT-IP を用いた L3 オーバーレイネットワークの PoC 実装です。  
-WireGuard が通れないような HTTPS のみ許可されたファイアウォール環境でも、UDP 443 さえ通れば動作します。
+既存のVPNサービスが通れないようなHTTPのみ許可されたファイアウォール環境でも、mionはHTTP/3上で動作することが期待できます。
 
 ```
 client ──CONNECT-IP over HTTP/3 (UDP:443)──> proxy <──── client
@@ -132,7 +132,7 @@ AllowedIPs = 100.100.0.2/32
 PersistentKeepalive = 25
 ```
 
-### client01 (`/etc/mion/mi0n.conf`)
+### client (`/etc/mion/mi0n.conf`)
 
 ```ini
 [Interface]
@@ -181,7 +181,7 @@ mion show mi0n
 
 ```
 interface: mi0n
-  listening port: 51820
+  listening port: 58719
 
 peer:
   public key: XdtOcXazRY7wd3SemdDFaIOJwJn7ntP74pOl4yXOD1s=
