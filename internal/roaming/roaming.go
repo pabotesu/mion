@@ -34,7 +34,7 @@ func (d *Detector) ObserveEndpoint(p *peer.Peer, observed netip.AddrPort) bool {
 	}
 
 	// HTTP/2 peers run over TCP; roaming is meaningless (requirements §14).
-	if p.EndpointScheme == "http2" {
+	if p.GetEndpointScheme() == "http2" {
 		return false
 	}
 

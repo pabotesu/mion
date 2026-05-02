@@ -60,13 +60,13 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 		return fmt.Errorf("client: peer %s has no endpoint configured", p.DisplayID())
 	}
 
-	switch p.EndpointScheme {
+	switch p.GetEndpointScheme() {
 	case "http3", "": // "" = legacy fallback
 		return c.dialH3(ctx, p)
 	case "http2":
 		return c.dialH2(ctx, p)
 	default:
-		return fmt.Errorf("client: unknown endpoint scheme %q for peer %s", p.EndpointScheme, p.DisplayID())
+		return fmt.Errorf("client: unknown endpoint scheme %q for peer %s", p.GetEndpointScheme(), p.DisplayID())
 	}
 }
 

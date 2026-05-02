@@ -58,7 +58,7 @@ type Peer struct {
 	// LastReceive is the time we last received a valid packet from this peer.
 	LastReceive time.Time
 
-	// mu protects mutable fields (Endpoint, Active, Conn, timestamps).
+	// mu protects mutable fields (Endpoint, EndpointScheme, Active, Conn, timestamps).
 	mu sync.RWMutex
 
 	// retrying indicates whether a background retry loop is currently running.
@@ -74,6 +74,20 @@ func (p *Peer) SetEndpoint(ep netip.AddrPort) bool {
 	}
 	p.Endpoint = ep
 	return true
+}
+
+// GetEndpointScheme returns the transport protocol scheme for this peer.
+func (p *Peer) GetEndpointScheme() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.EndpointScheme
+}
+
+// SetEndpointScheme updates the transport protocol scheme for this peer.
+func (p *Peer) SetEndpointScheme(scheme string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.EndpointScheme = scheme
 }
 
 // SetActive updates the peer's active status.

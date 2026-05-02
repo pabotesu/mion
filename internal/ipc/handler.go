@@ -97,7 +97,7 @@ func (h *Handler) handleGet(w *bufio.Writer) {
 		fmt.Fprintf(w, "peer_id=%s\n", p.PeerID)
 
 		if p.Endpoint.IsValid() {
-			scheme := p.EndpointScheme
+			scheme := p.GetEndpointScheme()
 			if scheme == "" {
 				scheme = "http3"
 			}
@@ -312,11 +312,11 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				errResult = fmt.Errorf("invalid endpoint address %q: %w", u.Host, err)
 				continue
 			}
-			if currentPeer.Endpoint != ep || currentPeer.EndpointScheme != scheme {
+			if currentPeer.Endpoint != ep || currentPeer.GetEndpointScheme() != scheme {
 				currentEndpointChanged = true
 			}
 			currentPeer.Endpoint = ep
-			currentPeer.EndpointScheme = scheme
+			currentPeer.SetEndpointScheme(scheme)
 			currentPeer.ConfiguredEndpoint = true
 			currentPeerModified = true
 

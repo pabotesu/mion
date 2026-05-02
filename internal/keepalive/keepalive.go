@@ -64,7 +64,7 @@ func (m *Manager) tick() {
 
 		// HTTP/2 peers: QUIC KeepAlivePeriod is not available, so we send
 		// an empty capsule at each interval to keep the TCP session alive.
-		if p.EndpointScheme == "http2" {
+		if p.GetEndpointScheme() == "http2" {
 			lastRecv := p.GetLastReceive()
 			if lastRecv.IsZero() || now.Sub(lastRecv) >= interval {
 				if err := conn.WritePacket([]byte{}); err != nil {
