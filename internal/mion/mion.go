@@ -77,7 +77,7 @@ func New(cfg Config) (*Mion, error) {
 	log.Printf("[mion] listening on %s", udpConn.LocalAddr())
 
 	// Create TUN device
-	mtu := 1280 // safe default for IPv6-over-QUIC
+	mtu := 1350 // QUIC+HTTP3+CONNECT-IP overhead (~150 bytes) subtracted from 1500
 	tun, err := tunnel.NewDevice(cfg.InterfaceName, mtu)
 	if err != nil {
 		// On non-Linux (dev), NewDevice returns a StubDevice + error.

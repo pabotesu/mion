@@ -23,6 +23,7 @@ import (
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	h3transport "github.com/pabotesu/mion/internal/transport/h3"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
@@ -137,11 +138,14 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 			}
 		}
 
-		// Register connection with the peer
-		if old := pr.GetConn(); old != nil && old != conn {
+		// Register connection with the peer.
+		// conn is *connectip.Conn (concrete); wrap as TunnelConn before storing.
+		// Close any existing session from a previous connect attempt by this peer.
+		tc := h3transport.New(conn)
+		if old := pr.GetConn(); old != nil {
 			_ = old.Close()
 		}
-		pr.SetConn(conn)
+		pr.SetConn(tc)
 		log.Printf("[proxy] peer %s connected, starting forwarding", pr.DisplayID())
 
 		// Start forwarding from this peer's connection to TUN
@@ -203,8 +207,12 @@ func (p *Proxy) ForwardTUNToConns(ctx context.Context) error {
 			continue
 		}
 
-		if _, err := conn.WritePacket(pkt); err != nil {
+		if err := conn.WritePacket(pkt); err != nil {
 			log.Printf("[proxy] write to peer %s failed: %v", pr.DisplayID(), err)
+			// A WritePacket error means the session is broken.
+			// Mark the peer as disconnected so the next client reconnect
+			// will re-establish the session via a new CONNECT-IP request.
+			pr.ClearConnIf(conn)
 		}
 	}
 }

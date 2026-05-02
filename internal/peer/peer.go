@@ -9,9 +9,8 @@ import (
 	"sync"
 	"time"
 
-	connectip "github.com/quic-go/connect-ip-go"
-
 	"github.com/pabotesu/mion/internal/identity"
+	"github.com/pabotesu/mion/internal/transport"
 )
 
 // Peer represents a known peer in the MION network.
@@ -41,8 +40,9 @@ type Peer struct {
 	// Active indicates whether this peer is currently usable on the data plane (requirements 10.4).
 	Active bool
 
-	// Conn is the CONNECT-IP session with this peer. Nil if not connected.
-	Conn *connectip.Conn
+	// Conn is the active tunnel session with this peer. Nil if not connected.
+	// The concrete type depends on the transport in use (h3.Conn, h2.Conn, etc.).
+	Conn transport.TunnelConn
 
 	// PersistentKeepalive is the keepalive interval in seconds. 0 means disabled.
 	PersistentKeepalive int
@@ -78,8 +78,8 @@ func (p *Peer) SetActive(active bool) {
 	p.Active = active
 }
 
-// SetConn sets the CONNECT-IP connection for this peer.
-func (p *Peer) SetConn(conn *connectip.Conn) {
+// SetConn stores the active tunnel session for this peer.
+func (p *Peer) SetConn(conn transport.TunnelConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Conn = conn
@@ -115,7 +115,7 @@ func (p *Peer) DisplayID() string {
 // ClearConnIf clears the peer connection only when the current connection
 // matches conn. This avoids stale forwarding goroutines clearing a newly
 // established connection.
-func (p *Peer) ClearConnIf(conn *connectip.Conn) bool {
+func (p *Peer) ClearConnIf(conn transport.TunnelConn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.Conn != conn {
@@ -126,8 +126,8 @@ func (p *Peer) ClearConnIf(conn *connectip.Conn) bool {
 	return true
 }
 
-// GetConn returns the current CONNECT-IP connection (may be nil).
-func (p *Peer) GetConn() *connectip.Conn {
+// GetConn returns the current tunnel session (may be nil).
+func (p *Peer) GetConn() transport.TunnelConn {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.Conn

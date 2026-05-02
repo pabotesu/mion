@@ -18,6 +18,7 @@ import (
 
 	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	h3transport "github.com/pabotesu/mion/internal/transport/h3"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
@@ -94,7 +95,7 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 		log.Printf("[client] warning: failed to receive routes from %s: %v", p.DisplayID(), err)
 	}
 
-	p.SetConn(ipconn)
+	p.SetConn(h3transport.New(ipconn))
 	log.Printf("[client] connected to peer %s at %s", p.DisplayID(), p.Endpoint)
 
 	return nil
@@ -206,8 +207,12 @@ func (c *Client) ForwardTUNToConn(ctx context.Context) error {
 			continue // peer not connected
 		}
 
-		if _, err := conn.WritePacket(pkt); err != nil {
+		if err := conn.WritePacket(pkt); err != nil {
 			log.Printf("[client] write to peer %s failed: %v", p.DisplayID(), err)
+			// A WritePacket error means the session is broken (not a silent drop).
+			// ClearConnIf ensures ForwardConnToTUN detects the breakage and
+			// triggers reconnection via StartRetry.
+			p.ClearConnIf(conn)
 		}
 	}
 }
