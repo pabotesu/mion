@@ -372,6 +372,10 @@ func (p *Proxy) ForwardConnToTUN(pr *peer.Peer) error {
 			pr.ClearConnIf(conn)
 			return fmt.Errorf("proxy: read from peer %s failed: %w", pr.DisplayID(), err)
 		}
+		// n==0 means a keepalive empty capsule; skip silently.
+		if n == 0 {
+			continue
+		}
 		pkt := buf[:n]
 
 		// Update last receive timestamp for keepalive/failover tracking

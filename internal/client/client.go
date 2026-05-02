@@ -300,6 +300,10 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 			p.ClearConnIf(conn)
 			return fmt.Errorf("client: read from peer %s failed: %w", p.DisplayID(), err)
 		}
+		// n==0 means a keepalive empty capsule; skip silently.
+		if n == 0 {
+			continue
+		}
 		pkt := buf[:n]
 
 		// Update last receive timestamp for keepalive/failover tracking
