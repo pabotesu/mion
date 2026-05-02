@@ -2,19 +2,21 @@
 
 **MASQUE-based L3 IP Overlay Network**
 
-mion は、HTTP/3 上の MASQUE CONNECT-IP を用いた L3 オーバーレイネットワークの PoC 実装です。  
-既存のVPNサービスが通れないようなHTTPのみ許可されたファイアウォール環境でも、mionはHTTP/3上で動作することが期待できます。
+mion は、HTTP/3 / HTTP/2 上の MASQUE CONNECT-IP を用いた L3 オーバーレイネットワークの PoC 実装です。  
+既存の VPN サービスが通れないような HTTP のみ許可されたファイアウォール環境でも、mion は HTTP/3（QUIC/UDP）または HTTP/2（TLS/TCP）上で動作することが期待できます。
 
 ```
-client ──CONNECT-IP over HTTP/3 (UDP:443)──> proxy <──── client
+client ──CONNECT-IP over HTTP/3 (UDP:443)───> proxy <──── client
+client ──CONNECT-IP over HTTP/2 (TCP:4443)──> proxy <──── client
 ```
 
 ## 特徴
 
-- **MASQUE CONNECT-IP** — HTTP/3 (QUIC) 上で L3 パケットをトンネリング
+- **MASQUE CONNECT-IP** — HTTP/3 (QUIC/UDP) または HTTP/2 (TLS/TCP) 上で L3 パケットをトンネリング
+- **デュアルトランスポート** — HTTP/3 と HTTP/2 を同時リッスン可能、ランタイムでプロトコル切り替え可
 - **mTLS 相互認証** — Ed25519 自己署名証明書による公開鍵ベース認証、CA 不要
 - **WireGuard ライクな操作** — 設定ファイル形式・CLI・鍵管理が WireGuard に準拠
-- **単一 UDP ソケット** — すべての通信を 1 つのソケットで処理し NAT mapping を維持
+- **単一 UDP ソケット** — HTTP/3 はすべての通信を 1 つのソケットで処理し NAT mapping を維持
 - **Keepalive / Roaming / Failover** — 接続維持・endpoint 追従・自動切替
 - **hub 中継対応** — proxy を中心とした複数 client 間のルーティングをサポート
 
@@ -44,7 +46,8 @@ client ──CONNECT-IP over HTTP/3 (UDP:443)──> proxy <──── client
 │  └──────────┘  └──────────┘  └───────────────┘   │
 │                                                  │
 │  ┌──────────────────┐  ┌─────────────────────┐   │
-│  │   TUN Device     │  │  Single UDP Socket  │   │
+│  │   TUN Device     │  │ HTTP/3: UDP Socket  │   │
+│  │                  │  │ HTTP/2: TCP Socket  │   │
 │  └──────────────────┘  └─────────────────────┘   │
 └──────────────────────────────────────────────────┘
 ```
@@ -118,7 +121,7 @@ WireGuard と同じ INI 形式です。デフォルトのパスは `/etc/mion/<i
 [Interface]
 PrivateKey = <proxy の秘密鍵>
 Address = 100.100.0.3/24
-ListenPort = 4443
+ListenPort = http3://:443, http2://:4443   # 両方同時リッスン可、片方だけでも可
 Role = proxy
 
 [Peer]
@@ -142,7 +145,8 @@ Role = client
 
 [Peer]
 PublicKey = <proxy の公開鍵>
-Endpoint = <proxy の IP>:4443
+Endpoint = http3://<proxy の IP>:443    # HTTP/3 の場合
+# Endpoint = http2://<proxy の IP>:4443 # HTTP/2 の場合
 AllowedIPs = 100.100.0.3/32, 100.100.0.2/32
 PersistentKeepalive = 25
 ```
@@ -153,11 +157,11 @@ PersistentKeepalive = 25
 |---|---|---|
 | `[Interface]` | `PrivateKey` | 自ノードの Ed25519 秘密鍵 (base64) |
 | | `Address` | TUN に割り当てる IP/prefix |
-| | `ListenPort` | UDP リッスンポート (client は省略可) |
+| | `ListenPort` | リッスンアドレス。`http3://:443` / `http2://:4443` 形式、カンマ区切りで複数指定可 (proxy のみ) |
 | | `Role` | `client` または `proxy` |
 | `[Peer]` | `PublicKey` | 相手の Ed25519 公開鍵 (base64) |
 | | `AllowedIPs` | 相手に許可する IP prefix (カンマ区切り可) |
-| | `Endpoint` | 相手の `IP:port` (client→proxy で必須) |
+| | `Endpoint` | 相手のアドレス。`http3://host:port` または `http2://host:port` 形式 (client→proxy で必須) |
 | | `PersistentKeepalive` | Keepalive 間隔 (秒、0 = 無効) |
 
 ## 起動
@@ -264,9 +268,11 @@ sequenceDiagram
 
 | 機能 | 説明 |
 |---|---|
-| **Keepalive** | QUIC レベルの `KeepAlivePeriod`（25秒）で NAT state を維持 |
-| **Roaming** | 動的 endpoint のピアからのアドレス変化を検知し自動更新 |
+| **Keepalive (HTTP/3)** | QUIC レベルの `KeepAlivePeriod`（25秒）で NAT state を維持 |
+| **Keepalive (HTTP/2)** | 空カプセル（0バイト）を定期送信して TCP セッションを維持 |
+| **Roaming** | 動的 endpoint のピアからのアドレス変化を検知し自動更新（HTTP/3 のみ） |
 | **自動再接続** | 接続断を検知すると指数バックオフ（2s〜30s）で自動リトライ |
+| **ランタイム切り替え** | `mion set` で HTTP/3 ↔ HTTP/2 をパケットロスなしで切り替え可 |
 
 ## テスト
 
@@ -280,6 +286,7 @@ go test ./...
 - [x] **Phase 2**: 接続維持 — Keepalive, Roaming, 自動再接続
 - [x] **Phase 3**: 接続安定化 — Linux 実機での TUN/ping 検証、Proxy 再起動時の自動復帰確認
 - [x] **Phase 4**: macOS 対応 — utun デバイスによる macOS でのフル動作確認
+- [x] **Phase 5**: HTTP/2 対応 — TLS/TCP 上の CONNECT-IP トンネル、HTTP/3 ↔ HTTP/2 ランタイム切り替え検証
 
 ## 今後の課題
 
@@ -294,6 +301,7 @@ go test ./...
 |---|---|
 | `quic-go/quic-go` | QUIC トランスポート |
 | `quic-go/connect-ip-go` | MASQUE CONNECT-IP プロトコル |
+| `golang.org/x/net/http2` | HTTP/2 トランスポート |
 | `songgao/water` | TUN デバイス作成 (Linux/macOS) |
 | `vishvananda/netlink` | Linux ネットワーク設定 |
 | `yosida95/uritemplate` | URI テンプレート (CONNECT-IP) |

@@ -5,10 +5,15 @@ import (
 	"net/netip"
 	"testing"
 
-	connectip "github.com/quic-go/connect-ip-go"
-
 	"github.com/pabotesu/mion/internal/identity"
 )
+
+// mockConn is a minimal transport.TunnelConn implementation for testing.
+type mockConn struct{}
+
+func (m *mockConn) ReadPacket(buf []byte) (int, error) { return 0, nil }
+func (m *mockConn) WritePacket(pkt []byte) error       { return nil }
+func (m *mockConn) Close() error                       { return nil }
 
 func makePeerID(s string) identity.PeerID {
 	return sha256.Sum256([]byte(s))
@@ -148,7 +153,7 @@ func TestPeerClearConnIf(t *testing.T) {
 	pid := makePeerID("peer1")
 	p := &Peer{PeerID: pid}
 
-	conn := &connectip.Conn{}
+	conn := &mockConn{}
 	p.SetConn(conn)
 
 	if !p.ClearConnIf(conn) {
@@ -166,8 +171,8 @@ func TestPeerClearConnIfMismatch(t *testing.T) {
 	pid := makePeerID("peer1")
 	p := &Peer{PeerID: pid}
 
-	conn := &connectip.Conn{}
-	other := &connectip.Conn{}
+	conn := &mockConn{}
+	other := &mockConn{}
 	p.SetConn(conn)
 
 	if p.ClearConnIf(other) {

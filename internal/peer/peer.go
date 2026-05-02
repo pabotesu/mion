@@ -9,9 +9,8 @@ import (
 	"sync"
 	"time"
 
-	connectip "github.com/quic-go/connect-ip-go"
-
 	"github.com/pabotesu/mion/internal/identity"
+	"github.com/pabotesu/mion/internal/transport"
 )
 
 // Peer represents a known peer in the MION network.
@@ -33,6 +32,11 @@ type Peer struct {
 	// If unset (zero value): dynamic endpoint, roaming allowed.
 	Endpoint netip.AddrPort
 
+	// EndpointScheme is the transport protocol for this peer's endpoint.
+	// "http3" (QUIC/CONNECT-IP) or "http2" (TLS+TCP/CONNECT-IP).
+	// Derived from the Endpoint URI scheme in the config file.
+	EndpointScheme string
+
 	// ConfiguredEndpoint indicates whether Endpoint was set via config file.
 	// When true: endpoint is fixed, roaming disabled.
 	// When false: endpoint is dynamic, updated by observation.
@@ -41,8 +45,9 @@ type Peer struct {
 	// Active indicates whether this peer is currently usable on the data plane (requirements 10.4).
 	Active bool
 
-	// Conn is the CONNECT-IP session with this peer. Nil if not connected.
-	Conn *connectip.Conn
+	// Conn is the active tunnel session with this peer. Nil if not connected.
+	// The concrete type depends on the transport in use (h3.Conn, h2.Conn, etc.).
+	Conn transport.TunnelConn
 
 	// PersistentKeepalive is the keepalive interval in seconds. 0 means disabled.
 	PersistentKeepalive int
@@ -53,7 +58,7 @@ type Peer struct {
 	// LastReceive is the time we last received a valid packet from this peer.
 	LastReceive time.Time
 
-	// mu protects mutable fields (Endpoint, Active, Conn, timestamps).
+	// mu protects mutable fields (Endpoint, EndpointScheme, Active, Conn, timestamps).
 	mu sync.RWMutex
 
 	// retrying indicates whether a background retry loop is currently running.
@@ -71,6 +76,20 @@ func (p *Peer) SetEndpoint(ep netip.AddrPort) bool {
 	return true
 }
 
+// GetEndpointScheme returns the transport protocol scheme for this peer.
+func (p *Peer) GetEndpointScheme() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.EndpointScheme
+}
+
+// SetEndpointScheme updates the transport protocol scheme for this peer.
+func (p *Peer) SetEndpointScheme(scheme string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.EndpointScheme = scheme
+}
+
 // SetActive updates the peer's active status.
 func (p *Peer) SetActive(active bool) {
 	p.mu.Lock()
@@ -78,8 +97,8 @@ func (p *Peer) SetActive(active bool) {
 	p.Active = active
 }
 
-// SetConn sets the CONNECT-IP connection for this peer.
-func (p *Peer) SetConn(conn *connectip.Conn) {
+// SetConn stores the active tunnel session for this peer.
+func (p *Peer) SetConn(conn transport.TunnelConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Conn = conn
@@ -115,7 +134,7 @@ func (p *Peer) DisplayID() string {
 // ClearConnIf clears the peer connection only when the current connection
 // matches conn. This avoids stale forwarding goroutines clearing a newly
 // established connection.
-func (p *Peer) ClearConnIf(conn *connectip.Conn) bool {
+func (p *Peer) ClearConnIf(conn transport.TunnelConn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.Conn != conn {
@@ -126,8 +145,8 @@ func (p *Peer) ClearConnIf(conn *connectip.Conn) bool {
 	return true
 }
 
-// GetConn returns the current CONNECT-IP connection (may be nil).
-func (p *Peer) GetConn() *connectip.Conn {
+// GetConn returns the current tunnel session (may be nil).
+func (p *Peer) GetConn() transport.TunnelConn {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.Conn

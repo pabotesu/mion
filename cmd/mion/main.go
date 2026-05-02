@@ -77,7 +77,7 @@ Key generation:
 Runtime set keys:
 	public_key=<base64>                 - select/create peer by Ed25519 public key
 	peer_id=<base64>                    - select/create peer by explicit PeerID
-	endpoint=<host:port>                - set peer endpoint (triggers reconnect)
+	endpoint=<http3://host:port>        - set peer endpoint with scheme (triggers reconnect)
 	allowed_ip=<cidr>                   - add allowed prefix to peer
 	persistent_keepalive_interval=<sec> - set keepalive interval
 	remove=true                         - remove selected peer
@@ -86,20 +86,20 @@ Examples:
 	# Add a new peer
 	mion set mion0 \
 		public_key=BASE64PUBKEY \
-		endpoint=203.0.113.10:4443 \
+		endpoint=http3://203.0.113.10:4443 \
 		allowed_ip=100.100.0.10/32 \
 		persistent_keepalive_interval=25
 
 	# Update existing peer endpoint (runtime reconnect)
-	mion set mion0 public_key=BASE64PUBKEY endpoint=198.51.100.5:4443
+	mion set mion0 public_key=BASE64PUBKEY endpoint=http3://198.51.100.5:4443
 
 	# Remove a peer
 	mion set mion0 public_key=BASE64PUBKEY remove=true
 
 	# Batch update multiple peers in one command
 	mion set mion0 \
-		public_key=PEER_A endpoint=203.0.113.11:4443 allowed_ip=100.100.0.11/32 \
-		public_key=PEER_B endpoint=203.0.113.12:4443 allowed_ip=100.100.0.12/32
+		public_key=PEER_A endpoint=http3://203.0.113.11:4443 allowed_ip=100.100.0.11/32 \
+		public_key=PEER_B endpoint=http2://203.0.113.12:4443 allowed_ip=100.100.0.12/32
 `)
 }
 

@@ -23,9 +23,18 @@ func NewDetector() *Detector {
 // If the observed endpoint differs from the stored one and roaming is allowed,
 // the endpoint is updated.
 //
+// HTTP/2 peers are excluded: TCP sessions are tied to a specific address, so
+// if the source address changes the session is already broken. Roaming only
+// applies to UDP/QUIC-based (HTTP/3) peers.
+//
 // Returns true if the endpoint was updated (roaming occurred).
 func (d *Detector) ObserveEndpoint(p *peer.Peer, observed netip.AddrPort) bool {
 	if !observed.IsValid() {
+		return false
+	}
+
+	// HTTP/2 peers run over TCP; roaming is meaningless (requirements §14).
+	if p.GetEndpointScheme() == "http2" {
 		return false
 	}
 

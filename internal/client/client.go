@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"time"
 
@@ -15,9 +17,12 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
+	"golang.org/x/net/http2"
 
 	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	h2transport "github.com/pabotesu/mion/internal/transport/h2"
+	h3transport "github.com/pabotesu/mion/internal/transport/h3"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
@@ -49,12 +54,24 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 }
 
 // DialPeer establishes a CONNECT-IP session with a single peer (proxy).
-// All dials go through the shared udpConn (same socket requirement).
+// The transport protocol is selected by p.EndpointScheme ("http3" or "http2").
 func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 	if !p.Endpoint.IsValid() {
 		return fmt.Errorf("client: peer %s has no endpoint configured", p.DisplayID())
 	}
 
+	switch p.GetEndpointScheme() {
+	case "http3", "": // "" = legacy fallback
+		return c.dialH3(ctx, p)
+	case "http2":
+		return c.dialH2(ctx, p)
+	default:
+		return fmt.Errorf("client: unknown endpoint scheme %q for peer %s", p.GetEndpointScheme(), p.DisplayID())
+	}
+}
+
+// dialH3 establishes an HTTP/3 CONNECT-IP session with a peer.
+func (c *Client) dialH3(ctx context.Context, p *peer.Peer) error {
 	addr := &net.UDPAddr{
 		IP:   p.Endpoint.Addr().AsSlice(),
 		Port: int(p.Endpoint.Port()),
@@ -94,9 +111,62 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 		log.Printf("[client] warning: failed to receive routes from %s: %v", p.DisplayID(), err)
 	}
 
-	p.SetConn(ipconn)
-	log.Printf("[client] connected to peer %s at %s", p.DisplayID(), p.Endpoint)
+	p.SetConn(h3transport.New(ipconn))
+	log.Printf("[client] connected to peer %s at %s (http3)", p.DisplayID(), p.Endpoint)
 
+	return nil
+}
+
+// dialH2 establishes an HTTP/2 bidirectional tunnel to a peer.
+// IP packets are framed as capsules over an HTTP/2 POST request / response body pair.
+func (c *Client) dialH2(ctx context.Context, p *peer.Peer) error {
+	// Build the target URL.
+	var rawURL string
+	if p.Endpoint.Addr().Is6() {
+		rawURL = fmt.Sprintf("https://[%s]:%d/mion", p.Endpoint.Addr(), p.Endpoint.Port())
+	} else {
+		rawURL = fmt.Sprintf("https://%s/mion", p.Endpoint)
+	}
+
+	// Clone the TLS config and restrict to HTTP/2 ALPN.
+	tlsConfig := c.tlsConfig.Clone()
+	tlsConfig.NextProtos = []string{"h2"}
+
+	// Use golang.org/x/net/http2.Transport to force HTTP/2 (avoids fallback to HTTP/1.1).
+	tr := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+	httpClient := &http.Client{Transport: tr}
+
+	// io.Pipe: pw is written by WritePacket (client→server), pr is the request body.
+	pr, pw := io.Pipe()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, pr)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return fmt.Errorf("client[h2]: build request: %w", err)
+	}
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	// Do sends HEADERS immediately; returns when the server's 200 HEADERS arrive.
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return fmt.Errorf("client[h2]: POST to %s failed: %w", p.DisplayID(), err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		_ = pr.Close()
+		_ = pw.Close()
+		_ = resp.Body.Close()
+		return fmt.Errorf("client[h2]: server responded with %d", resp.StatusCode)
+	}
+
+	conn := h2transport.NewClientConn(pw, resp.Body)
+	p.SetConn(conn)
+	log.Printf("[client] connected to peer %s at %s (http2)", p.DisplayID(), p.Endpoint)
 	return nil
 }
 
@@ -206,8 +276,12 @@ func (c *Client) ForwardTUNToConn(ctx context.Context) error {
 			continue // peer not connected
 		}
 
-		if _, err := conn.WritePacket(pkt); err != nil {
+		if err := conn.WritePacket(pkt); err != nil {
 			log.Printf("[client] write to peer %s failed: %v", p.DisplayID(), err)
+			// A WritePacket error means the session is broken (not a silent drop).
+			// ClearConnIf ensures ForwardConnToTUN detects the breakage and
+			// triggers reconnection via StartRetry.
+			p.ClearConnIf(conn)
 		}
 	}
 }
@@ -225,6 +299,10 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 		if err != nil {
 			p.ClearConnIf(conn)
 			return fmt.Errorf("client: read from peer %s failed: %w", p.DisplayID(), err)
+		}
+		// n==0 means a keepalive empty capsule; skip silently.
+		if n == 0 {
+			continue
 		}
 		pkt := buf[:n]
 
