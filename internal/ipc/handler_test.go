@@ -121,7 +121,7 @@ func TestHandleGetWithPeers(t *testing.T) {
 	if !strings.Contains(output, "peer_id="+pid.String()) {
 		t.Errorf("expected peer_id in output, got:\n%s", output)
 	}
-	if !strings.Contains(output, "endpoint=203.0.113.1:51820") {
+	if !strings.Contains(output, "endpoint=http3://203.0.113.1:51820") {
 		t.Errorf("expected endpoint in output, got:\n%s", output)
 	}
 	if !strings.Contains(output, "allowed_ip=10.0.0.0/24") {
@@ -142,7 +142,7 @@ func TestHandleSetAddPeer(t *testing.T) {
 	pubB64 := base64.StdEncoding.EncodeToString(pub)
 	pid := identity.PeerIDFromPublicKey(pub)
 
-	input := fmt.Sprintf("public_key=%s\nendpoint=203.0.113.2:51820\nallowed_ip=10.0.1.0/24\npersistent_keepalive_interval=30\n\n", pubB64)
+	input := fmt.Sprintf("public_key=%s\nendpoint=http3://203.0.113.2:51820\nallowed_ip=10.0.1.0/24\npersistent_keepalive_interval=30\n\n", pubB64)
 	r := bufio.NewReader(strings.NewReader(input))
 	var buf strings.Builder
 	w := bufio.NewWriter(&buf)
@@ -171,6 +171,9 @@ func TestHandleSetAddPeer(t *testing.T) {
 	if p.Endpoint != netip.MustParseAddrPort("203.0.113.2:51820") {
 		t.Errorf("Endpoint = %v", p.Endpoint)
 	}
+	if p.EndpointScheme != "http3" {
+		t.Errorf("EndpointScheme = %q, want http3", p.EndpointScheme)
+	}
 	if len(p.AllowedIPs) != 1 || p.AllowedIPs[0] != netip.MustParsePrefix("10.0.1.0/24") {
 		t.Errorf("AllowedIPs = %v", p.AllowedIPs)
 	}
@@ -196,7 +199,7 @@ func TestHandleSetMultiPeerAdd(t *testing.T) {
 	pub2B64 := base64.StdEncoding.EncodeToString(pub2)
 
 	input := fmt.Sprintf(
-		"public_key=%s\nendpoint=203.0.113.10:51820\nallowed_ip=10.10.0.1/32\npublic_key=%s\nendpoint=203.0.113.11:51820\nallowed_ip=10.10.0.2/32\n\n",
+		"public_key=%s\nendpoint=http3://203.0.113.10:51820\nallowed_ip=10.10.0.1/32\npublic_key=%s\nendpoint=http3://203.0.113.11:51820\nallowed_ip=10.10.0.2/32\n\n",
 		pub1B64,
 		pub2B64,
 	)
@@ -279,7 +282,7 @@ func TestHandleSetPublicKeyLegacyPeerIDCompatibility(t *testing.T) {
 	st.peers.Add(p)
 
 	pidB64 := base64.StdEncoding.EncodeToString(pid[:])
-	input := fmt.Sprintf("public_key=%s\nendpoint=203.0.113.9:51820\n\n", pidB64)
+	input := fmt.Sprintf("public_key=%s\nendpoint=http3://203.0.113.9:51820\n\n", pidB64)
 	r := bufio.NewReader(strings.NewReader(input))
 	var buf strings.Builder
 	w := bufio.NewWriter(&buf)
@@ -296,6 +299,9 @@ func TestHandleSetPublicKeyLegacyPeerIDCompatibility(t *testing.T) {
 	}
 	if updated.Endpoint != netip.MustParseAddrPort("203.0.113.9:51820") {
 		t.Fatalf("expected endpoint update, got %s", updated.Endpoint)
+	}
+	if updated.EndpointScheme != "http3" {
+		t.Errorf("EndpointScheme = %q, want http3", updated.EndpointScheme)
 	}
 }
 

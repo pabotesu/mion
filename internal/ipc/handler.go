@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -96,7 +97,11 @@ func (h *Handler) handleGet(w *bufio.Writer) {
 		fmt.Fprintf(w, "peer_id=%s\n", p.PeerID)
 
 		if p.Endpoint.IsValid() {
-			fmt.Fprintf(w, "endpoint=%s\n", p.Endpoint)
+			scheme := p.EndpointScheme
+			if scheme == "" {
+				scheme = "http3"
+			}
+			fmt.Fprintf(w, "endpoint=%s://%s\n", scheme, p.Endpoint)
 		}
 
 		for _, prefix := range p.AllowedIPs {
@@ -287,15 +292,31 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 			if currentPeer == nil {
 				continue
 			}
-			ep, err := netip.ParseAddrPort(value)
-			if err != nil {
-				errResult = fmt.Errorf("invalid endpoint: %w", err)
+			u, err := url.Parse(value)
+			if err != nil || u.Host == "" {
+				errResult = fmt.Errorf("invalid endpoint %q: use http3://host:port or http2://host:port", value)
 				continue
 			}
-			if currentPeer.Endpoint != ep {
+			scheme := strings.ToLower(u.Scheme)
+			if scheme != "http3" && scheme != "http2" {
+				errResult = fmt.Errorf("invalid endpoint scheme %q: use http3:// or http2://", u.Scheme)
+				continue
+			}
+			host, portStr, err := net.SplitHostPort(u.Host)
+			if err != nil {
+				errResult = fmt.Errorf("invalid endpoint address %q: %w", u.Host, err)
+				continue
+			}
+			ep, err := netip.ParseAddrPort(net.JoinHostPort(host, portStr))
+			if err != nil {
+				errResult = fmt.Errorf("invalid endpoint address %q: %w", u.Host, err)
+				continue
+			}
+			if currentPeer.Endpoint != ep || currentPeer.EndpointScheme != scheme {
 				currentEndpointChanged = true
 			}
 			currentPeer.Endpoint = ep
+			currentPeer.EndpointScheme = scheme
 			currentPeer.ConfiguredEndpoint = true
 			currentPeerModified = true
 

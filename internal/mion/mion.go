@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/pabotesu/mion/config"
 	"github.com/pabotesu/mion/internal/auth"
 	"github.com/pabotesu/mion/internal/client"
 	"github.com/pabotesu/mion/internal/identity"
@@ -34,8 +35,12 @@ type Config struct {
 	// InterfaceName is the TUN device name (e.g., "mion0").
 	InterfaceName string
 
-	// ListenPort is the UDP port for the shared socket. 0 = OS-assigned.
+	// ListenPort is the UDP port for the shared socket (client role). 0 = OS-assigned.
 	ListenPort int
+
+	// ListenEndpoints is the list of protocol+address pairs the proxy listens on.
+	// Each entry is parsed from ListenPort in the config file (proxy role).
+	ListenEndpoints []config.ListenEndpoint
 
 	// PrivateKey is the Ed25519 private key for this node.
 	PrivateKey ed25519.PrivateKey
@@ -287,7 +292,7 @@ func (m *Mion) runProxy(ctx context.Context, certDER []byte) error {
 		return fmt.Errorf("mion: proxy TLS config: %w", err)
 	}
 
-	p := proxy.NewProxy(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg, m.cfg.Address)
+	p := proxy.NewProxy(m.cfg.ListenEndpoints, m.peers, m.allowedIPs, m.tun, tlsCfg, m.cfg.Address)
 
 	// Start keepalive manager (requirements §11)
 	ka := keepalive.NewManager(m.peers)

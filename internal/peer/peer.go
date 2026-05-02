@@ -32,6 +32,11 @@ type Peer struct {
 	// If unset (zero value): dynamic endpoint, roaming allowed.
 	Endpoint netip.AddrPort
 
+	// EndpointScheme is the transport protocol for this peer's endpoint.
+	// "http3" (QUIC/CONNECT-IP) or "http2" (TLS+TCP/CONNECT-IP).
+	// Derived from the Endpoint URI scheme in the config file.
+	EndpointScheme string
+
 	// ConfiguredEndpoint indicates whether Endpoint was set via config file.
 	// When true: endpoint is fixed, roaming disabled.
 	// When false: endpoint is dynamic, updated by observation.

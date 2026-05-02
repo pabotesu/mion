@@ -11,7 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 
@@ -69,11 +71,12 @@ func run(configPath, ifaceName string) error {
 
 	// 4. Create Mion instance
 	m, err := mion.New(mion.Config{
-		InterfaceName: ifaceName,
-		ListenPort:    cfg.Interface.ListenPort,
-		PrivateKey:    privKey,
-		Address:       cfg.Interface.Address,
-		Role:          role,
+		InterfaceName:   ifaceName,
+		ListenPort:      cfg.Interface.ListenPort,
+		ListenEndpoints: cfg.Interface.ListenEndpoints,
+		PrivateKey:      privKey,
+		Address:         cfg.Interface.Address,
+		Role:            role,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create mion instance: %w", err)
@@ -133,11 +136,21 @@ func peerFromConfig(pc config.PeerConfig) (*peer.Peer, error) {
 	}
 
 	if pc.Endpoint != "" {
-		ep, err := netip.ParseAddrPort(pc.Endpoint)
-		if err != nil {
+		u, err := url.Parse(pc.Endpoint)
+		if err != nil || u.Host == "" {
 			return nil, fmt.Errorf("invalid peer Endpoint %q: %w", pc.Endpoint, err)
 		}
+		// net.SplitHostPort handles both "host:port" and "[::1]:port"
+		host, portStr, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			return nil, fmt.Errorf("invalid peer Endpoint address %q: %w", u.Host, err)
+		}
+		ep, err := netip.ParseAddrPort(net.JoinHostPort(host, portStr))
+		if err != nil {
+			return nil, fmt.Errorf("invalid peer Endpoint address %q: %w", u.Host, err)
+		}
 		p.Endpoint = ep
+		p.EndpointScheme = strings.ToLower(u.Scheme) // "http3" or "http2"
 		p.ConfiguredEndpoint = true
 	}
 

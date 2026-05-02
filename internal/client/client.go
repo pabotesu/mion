@@ -50,12 +50,24 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 }
 
 // DialPeer establishes a CONNECT-IP session with a single peer (proxy).
-// All dials go through the shared udpConn (same socket requirement).
+// The transport protocol is selected by p.EndpointScheme ("http3" or "http2").
 func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 	if !p.Endpoint.IsValid() {
 		return fmt.Errorf("client: peer %s has no endpoint configured", p.DisplayID())
 	}
 
+	switch p.EndpointScheme {
+	case "http3", "": // "" = legacy fallback
+		return c.dialH3(ctx, p)
+	case "http2":
+		return fmt.Errorf("client: http2 transport not yet implemented")
+	default:
+		return fmt.Errorf("client: unknown endpoint scheme %q for peer %s", p.EndpointScheme, p.DisplayID())
+	}
+}
+
+// dialH3 establishes an HTTP/3 CONNECT-IP session with a peer.
+func (c *Client) dialH3(ctx context.Context, p *peer.Peer) error {
 	addr := &net.UDPAddr{
 		IP:   p.Endpoint.Addr().AsSlice(),
 		Port: int(p.Endpoint.Port()),
@@ -96,7 +108,7 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 	}
 
 	p.SetConn(h3transport.New(ipconn))
-	log.Printf("[client] connected to peer %s at %s", p.DisplayID(), p.Endpoint)
+	log.Printf("[client] connected to peer %s at %s (http3)", p.DisplayID(), p.Endpoint)
 
 	return nil
 }

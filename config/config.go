@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -16,20 +18,40 @@ type Config struct {
 	Peers     []PeerConfig
 }
 
+// ListenEndpoint represents a single listen address used by the proxy.
+//
+// Format: scheme://[host]:port
+//
+// Examples:
+//
+//	ListenPort = http3://:443                    → [{"http3", "", 443}]
+//	ListenPort = http2://:4443, http3://:443     → [{"http2", "", 4443}, {"http3", "", 443}]
+//	ListenPort = http3://192.168.1.1:8443        → [{"http3", "192.168.1.1", 8443}]
+type ListenEndpoint struct {
+	Protocol string // "http2" or "http3"
+	Host     string // bind address; empty string means all interfaces
+	Port     int
+}
+
 // InterfaceConfig represents the [Interface] section.
 type InterfaceConfig struct {
-	PrivateKey string       // base64-encoded Ed25519 private key
-	Address    netip.Prefix // IP address for the TUN device
-	ListenPort int          // UDP listen port (0 = OS-assigned)
-	Role       string       // "client" or "proxy" (default: "client")
+	PrivateKey      string           // base64-encoded Ed25519 private key
+	Address         netip.Prefix     // IP address for the TUN device
+	ListenEndpoints []ListenEndpoint // parsed from ListenPort field
+	ListenPort      int              // first http3 port for backward compat (0 = none)
+	Role            string           // "client" or "proxy" (default: "client")
 }
 
 // PeerConfig represents a [Peer] section.
 type PeerConfig struct {
-	PublicKey           string         // base64-encoded Ed25519 public key
-	AllowedIPs          []netip.Prefix // prefixes this peer is responsible for
-	Endpoint            string         // host:port (empty = dynamic, roaming allowed)
-	PersistentKeepalive int            // seconds (0 = disabled)
+	PublicKey  string         // base64-encoded Ed25519 public key
+	AllowedIPs []netip.Prefix // prefixes this peer is responsible for
+	// Endpoint is the proxy address for this peer.
+	// Must include a scheme:
+	//   "http3://host:port"  — HTTP/3 (QUIC) transport
+	//   "http2://host:port"  — HTTP/2 (TLS/TCP) transport
+	Endpoint            string
+	PersistentKeepalive int // seconds (0 = disabled)
 }
 
 // Parse reads a WireGuard-style config from r.
@@ -98,11 +120,18 @@ func parseInterfaceField(iface *InterfaceConfig, key, value string) error {
 		}
 		iface.Address = prefix
 	case "ListenPort":
-		port, err := strconv.Atoi(value)
+		ends, err := parseListenEndpoints(value)
 		if err != nil {
 			return fmt.Errorf("config: invalid ListenPort %q: %w", value, err)
 		}
-		iface.ListenPort = port
+		iface.ListenEndpoints = ends
+		// Populate legacy ListenPort with the first http3 port for backward compat.
+		for _, e := range ends {
+			if e.Protocol == "http3" {
+				iface.ListenPort = e.Port
+				break
+			}
+		}
 	case "Role":
 		switch strings.ToLower(value) {
 		case "client", "proxy":
@@ -129,6 +158,9 @@ func parsePeerField(peer *PeerConfig, key, value string) error {
 			peer.AllowedIPs = append(peer.AllowedIPs, prefix)
 		}
 	case "Endpoint":
+		if err := validateEndpoint(value); err != nil {
+			return fmt.Errorf("config: invalid Endpoint %q: %w", value, err)
+		}
 		peer.Endpoint = value
 	case "PersistentKeepalive":
 		secs, err := strconv.Atoi(value)
@@ -140,4 +172,55 @@ func parsePeerField(peer *PeerConfig, key, value string) error {
 		return fmt.Errorf("config: unknown Peer key %q", key)
 	}
 	return nil
+}
+
+// parseListenEndpoints parses the ListenPort field value into ListenEndpoints.
+//
+// Required format: scheme://[host]:port
+//
+//	"http3://:443"                → [{"http3", "", 443}]
+//	"http2://:4443, http3://:443" → [{"http2", "", 4443}, {"http3", "", 443}]
+//	"http3://192.168.1.1:8443"    → [{"http3", "192.168.1.1", 8443}]
+func parseListenEndpoints(value string) ([]ListenEndpoint, error) {
+	var ends []ListenEndpoint
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		u, err := url.Parse(part)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("invalid ListenPort entry %q: use http3://:port or http2://:port", part)
+		}
+		proto := strings.ToLower(u.Scheme)
+		if proto != "http2" && proto != "http3" {
+			return nil, fmt.Errorf("unknown protocol %q in %q (use http2:// or http3://)", proto, part)
+		}
+		host, portStr, err := net.SplitHostPort(u.Host)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address in %q: %w", part, err)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("invalid port in %q", part)
+		}
+		ends = append(ends, ListenEndpoint{Protocol: proto, Host: host, Port: port})
+	}
+	if len(ends) == 0 {
+		return nil, fmt.Errorf("no valid endpoints found")
+	}
+	return ends, nil
+}
+
+// validateEndpoint checks that the Endpoint value uses a supported scheme.
+//
+// Accepted formats:
+//
+//	"http3://host:port"   — explicit HTTP/3
+//	"http2://host:port"   — explicit HTTP/2
+func validateEndpoint(value string) error {
+	if strings.HasPrefix(value, "http3://") || strings.HasPrefix(value, "http2://") {
+		return nil
+	}
+	return fmt.Errorf("Endpoint %q must specify a scheme: use http3:// or http2://", value)
 }
