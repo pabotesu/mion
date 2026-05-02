@@ -66,20 +66,13 @@ type Mion struct {
 }
 
 // New creates and initializes a Mion instance.
-// It creates the single shared UDP socket and TUN device.
+// For proxy role: no shared UDP socket is created (each ListenEndpoint creates its own).
+// For client role: a single shared UDP socket is created for all outbound dials.
 func New(cfg Config) (*Mion, error) {
 	// Derive our own PeerID
 	pub := cfg.PrivateKey.Public().(ed25519.PublicKey)
 	peerID := identity.PeerIDFromPublicKey(pub)
 	log.Printf("[mion] local peer_id: %s", peerID)
-
-	// Create the single shared UDP socket (requirements section 14)
-	listenAddr := &net.UDPAddr{Port: cfg.ListenPort}
-	udpConn, err := net.ListenUDP("udp", listenAddr)
-	if err != nil {
-		return nil, fmt.Errorf("mion: failed to create UDP socket: %w", err)
-	}
-	log.Printf("[mion] listening on %s", udpConn.LocalAddr())
 
 	// Create TUN device
 	mtu := 1350 // QUIC+HTTP3+CONNECT-IP overhead (~150 bytes) subtracted from 1500
@@ -93,7 +86,6 @@ func New(cfg Config) (*Mion, error) {
 	return &Mion{
 		cfg:        cfg,
 		peerID:     peerID,
-		udpConn:    udpConn,
 		tun:        tun,
 		peers:      peer.NewKnownPeers(),
 		allowedIPs: routing.NewAllowedIPs(),
@@ -103,13 +95,20 @@ func New(cfg Config) (*Mion, error) {
 // PeerID returns this node's PeerID.
 func (m *Mion) PeerID() identity.PeerID { return m.peerID }
 
-// ListenPort returns the UDP listen port.
+// ListenPort returns the UDP listen port (client role only).
+// For proxy role, returns the first http3 port from ListenEndpoints (or 0).
 func (m *Mion) ListenPort() int {
-	if m.udpConn == nil {
-		return 0
+	if m.udpConn != nil {
+		addr := m.udpConn.LocalAddr().(*net.UDPAddr)
+		return addr.Port
 	}
-	addr := m.udpConn.LocalAddr().(*net.UDPAddr)
-	return addr.Port
+	// Proxy role: derive from ListenEndpoints
+	for _, ep := range m.cfg.ListenEndpoints {
+		if ep.Protocol == "http3" {
+			return ep.Port
+		}
+	}
+	return 0
 }
 
 // UDPConn returns the shared UDP socket.
@@ -234,10 +233,19 @@ func (m *Mion) Run(ctx context.Context) error {
 	}
 }
 
-// runClient starts the MION client role: dials all configured peers,
-// then runs the TUN→Conn forwarding loop, keepalive, and failover
-// until context cancellation.
+// runClient starts the MION client role: creates the shared UDP socket,
+// dials all configured peers, then runs the TUN→Conn forwarding loop,
+// keepalive, and failover until context cancellation.
 func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
+	// Client creates a single shared UDP socket for all outbound QUIC dials.
+	listenAddr := &net.UDPAddr{Port: m.cfg.ListenPort}
+	udpConn, err := net.ListenUDP("udp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("mion: failed to create UDP socket: %w", err)
+	}
+	m.udpConn = udpConn
+	log.Printf("[mion] client socket: %s", udpConn.LocalAddr())
+
 	tlsCfg, err := auth.NewClientTLSConfig(m.cfg.PrivateKey, certDER, m.peers)
 	if err != nil {
 		return fmt.Errorf("mion: client TLS config: %w", err)
