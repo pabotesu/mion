@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -19,11 +20,13 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
+	"golang.org/x/net/http2"
 
 	"github.com/pabotesu/mion/config"
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
@@ -77,7 +80,9 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 				errCh <- p.serveH3(ctx, ep)
 			}(ep)
 		case "http2":
-			return fmt.Errorf("proxy: http2 transport not yet implemented")
+			go func(ep config.ListenEndpoint) {
+				errCh <- p.serveH2(ctx, ep)
+			}(ep)
 		default:
 			return fmt.Errorf("proxy: unknown protocol %q", ep.Protocol)
 		}
@@ -91,8 +96,109 @@ func (p *Proxy) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// serveH2 starts an HTTP/2 (TLS over TCP) listener for a single endpoint.
+// It creates its own TCP socket bound to ep.Host:ep.Port.
+func (p *Proxy) serveH2(ctx context.Context, ep config.ListenEndpoint) error {
+	addr := net.JoinHostPort(ep.Host, fmt.Sprintf("%d", ep.Port))
+
+	// Clone the TLS config and restrict to HTTP/2 ALPN.
+	tlsConfig := p.tlsConfig.Clone()
+	tlsConfig.NextProtos = []string{"h2"}
+
+	ln, err := tls.Listen("tcp", addr, tlsConfig)
+	if err != nil {
+		return fmt.Errorf("proxy[h2]: listen TCP %s: %w", addr, err)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mion", p.connectIPH2Handler)
+
+	server := &http.Server{Handler: mux}
+	if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+		return fmt.Errorf("proxy[h2]: configure http2: %w", err)
+	}
+
+	log.Printf("[proxy] http2 listening on %s", ln.Addr())
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = server.Close()
+		return ctx.Err()
+	case err := <-serverErr:
+		return fmt.Errorf("proxy[h2] %s: %w", addr, err)
+	}
+}
+
+// connectIPH2Handler is the HTTP handler for HTTP/2 POST-based IP tunnel requests.
+// The client sends IP packets as capsules in the request body; the server sends
+// IP packets as capsules in the response body. The handler blocks until the
+// HTTP/2 stream is closed, keeping the stream alive for the forwarding goroutines.
+func (p *Proxy) connectIPH2Handler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[proxy] incoming http2 tunnel request from %s", r.RemoteAddr)
+
+	// Identify the peer via mTLS certificate.
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		log.Printf("[proxy] no client certificate presented")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	pub, ok := r.TLS.PeerCertificates[0].PublicKey.(ed25519.PublicKey)
+	if !ok {
+		log.Printf("[proxy] client certificate key is not Ed25519")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	peerID := identity.PeerIDFromPublicKey(pub)
+	pr := p.peers.Lookup(peerID)
+	if pr == nil {
+		log.Printf("[proxy] unknown peer public_key=%s peer_id=%s",
+			base64.StdEncoding.EncodeToString(pub), peerID)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		log.Printf("[proxy] http2: ResponseWriter does not implement http.Flusher")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Signal tunnel readiness to the client.
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	conn := h2transport.NewServerConn(r.Body, w, flusher)
+	if old := pr.GetConn(); old != nil {
+		_ = old.Close()
+	}
+	pr.SetConn(conn)
+	log.Printf("[proxy] peer %s connected (http2), starting forwarding", pr.DisplayID())
+
+	go func() {
+		if err := p.ForwardConnToTUN(pr); err != nil {
+			log.Printf("[proxy] forwarding for peer %s ended: %v", pr.DisplayID(), err)
+		}
+	}()
+
+	// Block until the HTTP/2 stream is closed (client disconnects or context is cancelled).
+	// When this handler returns, the HTTP/2 stream closes, which causes ReadPacket to
+	// return an error in the ForwardConnToTUN goroutine above.
+	<-r.Context().Done()
+	pr.ClearConnIf(conn)
+	_ = conn.Close()
+}
+
 // serveH3 starts an HTTP/3 (QUIC) listener for a single endpoint.
-// It creates its own UDP socket bound to ep.Host:ep.Port.
 func (p *Proxy) serveH3(ctx context.Context, ep config.ListenEndpoint) error {
 	addr := net.JoinHostPort(ep.Host, fmt.Sprintf("%d", ep.Port))
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)

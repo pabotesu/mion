@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"time"
 
@@ -15,9 +17,11 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
+	"golang.org/x/net/http2"
 
 	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
@@ -60,7 +64,7 @@ func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
 	case "http3", "": // "" = legacy fallback
 		return c.dialH3(ctx, p)
 	case "http2":
-		return fmt.Errorf("client: http2 transport not yet implemented")
+		return c.dialH2(ctx, p)
 	default:
 		return fmt.Errorf("client: unknown endpoint scheme %q for peer %s", p.EndpointScheme, p.DisplayID())
 	}
@@ -110,6 +114,59 @@ func (c *Client) dialH3(ctx context.Context, p *peer.Peer) error {
 	p.SetConn(h3transport.New(ipconn))
 	log.Printf("[client] connected to peer %s at %s (http3)", p.DisplayID(), p.Endpoint)
 
+	return nil
+}
+
+// dialH2 establishes an HTTP/2 bidirectional tunnel to a peer.
+// IP packets are framed as capsules over an HTTP/2 POST request / response body pair.
+func (c *Client) dialH2(ctx context.Context, p *peer.Peer) error {
+	// Build the target URL.
+	var rawURL string
+	if p.Endpoint.Addr().Is6() {
+		rawURL = fmt.Sprintf("https://[%s]:%d/mion", p.Endpoint.Addr(), p.Endpoint.Port())
+	} else {
+		rawURL = fmt.Sprintf("https://%s/mion", p.Endpoint)
+	}
+
+	// Clone the TLS config and restrict to HTTP/2 ALPN.
+	tlsConfig := c.tlsConfig.Clone()
+	tlsConfig.NextProtos = []string{"h2"}
+
+	// Use golang.org/x/net/http2.Transport to force HTTP/2 (avoids fallback to HTTP/1.1).
+	tr := &http2.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+	httpClient := &http.Client{Transport: tr}
+
+	// io.Pipe: pw is written by WritePacket (client→server), pr is the request body.
+	pr, pw := io.Pipe()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, pr)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return fmt.Errorf("client[h2]: build request: %w", err)
+	}
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	// Do sends HEADERS immediately; returns when the server's 200 HEADERS arrive.
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return fmt.Errorf("client[h2]: POST to %s failed: %w", p.DisplayID(), err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		_ = pr.Close()
+		_ = pw.Close()
+		_ = resp.Body.Close()
+		return fmt.Errorf("client[h2]: server responded with %d", resp.StatusCode)
+	}
+
+	conn := h2transport.NewClientConn(pw, resp.Body)
+	p.SetConn(conn)
+	log.Printf("[client] connected to peer %s at %s (http2)", p.DisplayID(), p.Endpoint)
 	return nil
 }
 
