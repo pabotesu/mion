@@ -22,6 +22,8 @@ import (
 type DeviceState interface {
 	PeerID() identity.PeerID
 	ListenPort() int
+	ListenEndpoints() []string
+	Role() string
 	Peers() *peer.KnownPeers
 	AllowedIPs() *routing.AllowedIPs
 }
@@ -87,7 +89,11 @@ func (h *Handler) handleConn(conn net.Conn) {
 // Format follows WireGuard's UAPI: key=value lines, empty line at end.
 func (h *Handler) handleGet(w *bufio.Writer) {
 	// Device info
+	fmt.Fprintf(w, "role=%s\n", h.state.Role())
 	fmt.Fprintf(w, "listen_port=%d\n", h.state.ListenPort())
+	for _, ep := range h.state.ListenEndpoints() {
+		fmt.Fprintf(w, "listen_endpoint=%s\n", ep)
+	}
 
 	// Peer info
 	for _, p := range h.state.Peers().All() {

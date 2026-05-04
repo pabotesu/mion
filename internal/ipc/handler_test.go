@@ -25,6 +25,8 @@ type mockState struct {
 
 func (m *mockState) PeerID() identity.PeerID         { return m.peerID }
 func (m *mockState) ListenPort() int                 { return m.listenPort }
+func (m *mockState) ListenEndpoints() []string       { return nil }
+func (m *mockState) Role() string                    { return "client" }
 func (m *mockState) Peers() *peer.KnownPeers         { return m.peers }
 func (m *mockState) AllowedIPs() *routing.AllowedIPs { return m.allowedIPs }
 

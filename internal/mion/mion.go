@@ -95,6 +95,23 @@ func New(cfg Config) (*Mion, error) {
 // PeerID returns this node's PeerID.
 func (m *Mion) PeerID() identity.PeerID { return m.peerID }
 
+// Role returns the role name for UAPI display.
+func (m *Mion) Role() string {
+	if m.cfg.Role == RoleProxy {
+		return "proxy"
+	}
+	return "client"
+}
+
+// ListenEndpoints returns the listen endpoints as URL strings for UAPI display.
+func (m *Mion) ListenEndpoints() []string {
+	var eps []string
+	for _, ep := range m.cfg.ListenEndpoints {
+		eps = append(eps, fmt.Sprintf("%s://:%d", ep.Protocol, ep.Port))
+	}
+	return eps
+}
+
 // ListenPort returns the UDP listen port (client role only).
 // For proxy role, returns the first http3 port from ListenEndpoints (or 0).
 func (m *Mion) ListenPort() int {
