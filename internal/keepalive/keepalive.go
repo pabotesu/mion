@@ -69,12 +69,15 @@ func (m *Manager) tick() {
 			}
 		}
 
-		// If no data received for 2× interval, close the connection.
-		// ForwardConnToTUN will detect the error and StartRetry will reconnect.
-		lastRecv := p.GetLastReceive()
-		if !lastRecv.IsZero() && now.Sub(lastRecv) >= 2*keepaliveInterval {
-			log.Printf("[keepalive] peer %s silent for %s, closing connection", p.PeerID, now.Sub(lastRecv).Round(time.Second))
-			_ = conn.Close()
+		// HTTP/2 only: if no data received for 2× interval, close the connection.
+		// HTTP/3 peers rely on QUIC KeepAlivePeriod for liveness; ReadPacket will
+		// return an error automatically when the QUIC connection dies.
+		if p.GetEndpointScheme() == "http2" {
+			lastRecv := p.GetLastReceive()
+			if !lastRecv.IsZero() && now.Sub(lastRecv) >= 2*keepaliveInterval {
+				log.Printf("[keepalive] peer %s silent for %s, closing connection", p.PeerID, now.Sub(lastRecv).Round(time.Second))
+				_ = conn.Close()
+			}
 		}
 	}
 }
