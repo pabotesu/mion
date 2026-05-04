@@ -39,16 +39,20 @@ type Client struct {
 
 // NewClient creates a new client that uses the provided shared UDP socket.
 func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing.AllowedIPs, tun tunnel.Device, tlsConfig *tls.Config) *Client {
+	// Clone TLS config and enable session resumption for QUIC 0-RTT reconnects.
+	tlsCfg := tlsConfig.Clone()
+	tlsCfg.ClientSessionCache = tls.NewLRUClientSessionCache(32)
 	return &Client{
 		udpConn:    udpConn,
 		transport:  &quic.Transport{Conn: udpConn},
 		peers:      peers,
 		allowedIPs: allowedIPs,
 		tun:        tun,
-		tlsConfig:  tlsConfig,
+		tlsConfig:  tlsCfg,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 25 * time.Second,
+			KeepAlivePeriod: 10 * time.Second,
+			MaxIdleTimeout:  15 * time.Second,
 		},
 	}
 }
