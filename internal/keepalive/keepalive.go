@@ -20,7 +20,7 @@ import (
 )
 
 // keepaliveInterval is the fixed interval for liveness checks and HTTP/2 keepalive capsules.
-const keepaliveInterval = 25 * time.Second
+const keepaliveInterval = 10 * time.Second
 
 // Manager monitors peer liveness and closes dead connections so that
 // client.StartRetry can detect the failure and reconnect.

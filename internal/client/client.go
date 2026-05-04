@@ -48,7 +48,8 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 		tlsConfig:  tlsConfig,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 25 * time.Second,
+			KeepAlivePeriod: 10 * time.Second,
+			MaxIdleTimeout:  15 * time.Second,
 		},
 	}
 }

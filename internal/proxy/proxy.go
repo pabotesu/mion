@@ -60,7 +60,8 @@ func NewProxy(
 		localPrefix: localPrefix,
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
-			KeepAlivePeriod: 25 * time.Second,
+			KeepAlivePeriod: 10 * time.Second,
+			MaxIdleTimeout:  15 * time.Second,
 		},
 	}
 }
