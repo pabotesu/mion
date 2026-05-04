@@ -95,6 +95,23 @@ func New(cfg Config) (*Mion, error) {
 // PeerID returns this node's PeerID.
 func (m *Mion) PeerID() identity.PeerID { return m.peerID }
 
+// Role returns the role name for UAPI display.
+func (m *Mion) Role() string {
+	if m.cfg.Role == RoleProxy {
+		return "proxy"
+	}
+	return "client"
+}
+
+// ListenEndpoints returns the listen endpoints as URL strings for UAPI display.
+func (m *Mion) ListenEndpoints() []string {
+	var eps []string
+	for _, ep := range m.cfg.ListenEndpoints {
+		eps = append(eps, fmt.Sprintf("%s://:%d", ep.Protocol, ep.Port))
+	}
+	return eps
+}
+
 // ListenPort returns the UDP listen port (client role only).
 // For proxy role, returns the first http3 port from ListenEndpoints (or 0).
 func (m *Mion) ListenPort() int {
@@ -140,6 +157,23 @@ func (m *Mion) RemovePeer(id identity.PeerID) {
 	m.allowedIPs.Remove(id)
 	m.peers.Remove(id)
 	log.Printf("[mion] removed peer %s", id)
+}
+
+// UpdatePeerAllowedIPs replaces the AllowedIPs for an existing peer and
+// atomically updates the routing table to match.
+func (m *Mion) UpdatePeerAllowedIPs(id identity.PeerID, prefixes []netip.Prefix) error {
+	p := m.peers.Lookup(id)
+	if p == nil {
+		return fmt.Errorf("mion: peer %s not found", id)
+	}
+	// Remove all existing routing entries for this peer.
+	m.allowedIPs.Remove(id)
+	// Insert the new prefixes.
+	for _, prefix := range prefixes {
+		m.allowedIPs.Insert(prefix, id)
+	}
+	log.Printf("[mion] updated allowed_ips for peer %s: %d prefixes", p.DisplayID(), len(prefixes))
+	return nil
 }
 
 // ReconnectPeer tears down the existing connection for a peer and

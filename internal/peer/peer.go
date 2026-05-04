@@ -49,9 +49,6 @@ type Peer struct {
 	// The concrete type depends on the transport in use (h3.Conn, h2.Conn, etc.).
 	Conn transport.TunnelConn
 
-	// PersistentKeepalive is the keepalive interval in seconds. 0 means disabled.
-	PersistentKeepalive int
-
 	// LastHandshake is the time the CONNECT-IP session was established.
 	LastHandshake time.Time
 

@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/pabotesu/mion/internal/identity"
@@ -23,6 +22,8 @@ import (
 type DeviceState interface {
 	PeerID() identity.PeerID
 	ListenPort() int
+	ListenEndpoints() []string
+	Role() string
 	Peers() *peer.KnownPeers
 	AllowedIPs() *routing.AllowedIPs
 }
@@ -32,6 +33,7 @@ type DeviceMutator interface {
 	AddPeer(p *peer.Peer) error
 	RemovePeer(id identity.PeerID)
 	ReconnectPeer(id identity.PeerID) error
+	UpdatePeerAllowedIPs(id identity.PeerID, prefixes []netip.Prefix) error
 }
 
 // Handler processes UAPI connections for a single MION interface.
@@ -87,7 +89,11 @@ func (h *Handler) handleConn(conn net.Conn) {
 // Format follows WireGuard's UAPI: key=value lines, empty line at end.
 func (h *Handler) handleGet(w *bufio.Writer) {
 	// Device info
+	fmt.Fprintf(w, "role=%s\n", h.state.Role())
 	fmt.Fprintf(w, "listen_port=%d\n", h.state.ListenPort())
+	for _, ep := range h.state.ListenEndpoints() {
+		fmt.Fprintf(w, "listen_endpoint=%s\n", ep)
+	}
 
 	// Peer info
 	for _, p := range h.state.Peers().All() {
@@ -108,10 +114,6 @@ func (h *Handler) handleGet(w *bufio.Writer) {
 			fmt.Fprintf(w, "allowed_ip=%s\n", prefix)
 		}
 
-		if p.PersistentKeepalive > 0 {
-			fmt.Fprintf(w, "persistent_keepalive_interval=%d\n", p.PersistentKeepalive)
-		}
-
 		if p.Active {
 			fmt.Fprintf(w, "active=1\n")
 		} else {
@@ -129,6 +131,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 	var currentPeer *peer.Peer
 	currentPeerExists := false
 	currentPeerModified := false
+	currentPeerAllowedIPsReplaced := false
 	currentEndpointChanged := false
 	var errResult error
 
@@ -175,6 +178,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 		if !currentPeerModified {
 			currentPeer = nil
 			currentPeerExists = false
+			currentPeerAllowedIPsReplaced = false
 			currentEndpointChanged = false
 			return
 		}
@@ -196,6 +200,15 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 			}
 		} else {
 			appliedPeers++
+			// 既存 peer の AllowedIPs が replace された場合、routing table を同期する。
+			if currentPeerAllowedIPsReplaced {
+				if err := h.mutator.UpdatePeerAllowedIPs(currentPeer.PeerID, currentPeer.AllowedIPs); err != nil {
+					log.Printf("[uapi] allowed_ip update for peer %s failed: %v", currentPeer.DisplayID(), err)
+					errResult = err
+				} else {
+					log.Printf("[uapi] allowed_ip updated for peer %s", currentPeer.DisplayID())
+				}
+			}
 			if currentEndpointChanged {
 				log.Printf("[uapi] endpoint changed for peer %s, triggering reconnect", currentPeer.DisplayID())
 				if err := h.mutator.ReconnectPeer(currentPeer.PeerID); err != nil {
@@ -209,6 +222,7 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 		currentPeer = nil
 		currentPeerExists = false
 		currentPeerModified = false
+		currentPeerAllowedIPsReplaced = false
 		currentEndpointChanged = false
 	}
 
@@ -329,20 +343,18 @@ func (h *Handler) handleSet(r *bufio.Reader, w *bufio.Writer) {
 				errResult = fmt.Errorf("invalid allowed_ip: %w", err)
 				continue
 			}
+			// WireGuard 互換: allowed_ip は常に replace セマンティクス。
+			// 最初の allowed_ip が来たタイミングで既存リストをクリアする。
+			if !currentPeerAllowedIPsReplaced {
+				currentPeer.AllowedIPs = nil
+				currentPeerAllowedIPsReplaced = true
+			}
 			currentPeer.AllowedIPs = append(currentPeer.AllowedIPs, prefix)
 			currentPeerModified = true
 
 		case "persistent_keepalive_interval":
-			if currentPeer == nil {
-				continue
-			}
-			secs, err := strconv.Atoi(value)
-			if err != nil {
-				errResult = fmt.Errorf("invalid persistent_keepalive_interval: %w", err)
-				continue
-			}
-			currentPeer.PersistentKeepalive = secs
-			currentPeerModified = true
+			// No longer configurable; silently ignore for backward compatibility.
+			continue
 		}
 	}
 

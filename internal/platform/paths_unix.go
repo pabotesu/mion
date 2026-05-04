@@ -13,3 +13,8 @@ func RuntimeDir() string { return "/var/run/mion" }
 func SocketPath(ifname string) string {
 	return RuntimeDir() + "/" + ifname + ".sock"
 }
+
+// PIDPath returns the PID file path for a given interface name.
+func PIDPath(ifname string) string {
+	return RuntimeDir() + "/" + ifname + ".pid"
+}

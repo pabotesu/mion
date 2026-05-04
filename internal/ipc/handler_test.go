@@ -25,6 +25,8 @@ type mockState struct {
 
 func (m *mockState) PeerID() identity.PeerID         { return m.peerID }
 func (m *mockState) ListenPort() int                 { return m.listenPort }
+func (m *mockState) ListenEndpoints() []string       { return nil }
+func (m *mockState) Role() string                    { return "client" }
 func (m *mockState) Peers() *peer.KnownPeers         { return m.peers }
 func (m *mockState) AllowedIPs() *routing.AllowedIPs { return m.allowedIPs }
 
@@ -50,6 +52,18 @@ func (m *mockMutator) RemovePeer(id identity.PeerID) {
 
 func (m *mockMutator) ReconnectPeer(id identity.PeerID) error {
 	m.reconnectCalls = append(m.reconnectCalls, id)
+	return nil
+}
+
+func (m *mockMutator) UpdatePeerAllowedIPs(id identity.PeerID, prefixes []netip.Prefix) error {
+	m.state.allowedIPs.Remove(id)
+	for _, prefix := range prefixes {
+		m.state.allowedIPs.Insert(prefix, id)
+	}
+	// Update the peer's AllowedIPs field in the registry.
+	if p := m.state.peers.Lookup(id); p != nil {
+		p.AllowedIPs = prefixes
+	}
 	return nil
 }
 
@@ -98,13 +112,12 @@ func TestHandleGetWithPeers(t *testing.T) {
 	pub := makePublicKey("peer1")
 	pid := identity.PeerIDFromPublicKey(pub)
 	p := &peer.Peer{
-		PublicKey:           pub,
-		PeerID:              pid,
-		AllowedIPs:          []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")},
-		Endpoint:            netip.MustParseAddrPort("203.0.113.1:51820"),
-		ConfiguredEndpoint:  true,
-		PersistentKeepalive: 25,
-		Active:              false,
+		PublicKey:          pub,
+		PeerID:             pid,
+		AllowedIPs:         []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")},
+		Endpoint:           netip.MustParseAddrPort("203.0.113.1:51820"),
+		ConfiguredEndpoint: true,
+		Active:             false,
 	}
 	st.peers.Add(p)
 
@@ -126,9 +139,6 @@ func TestHandleGetWithPeers(t *testing.T) {
 	}
 	if !strings.Contains(output, "allowed_ip=10.0.0.0/24") {
 		t.Errorf("expected allowed_ip in output, got:\n%s", output)
-	}
-	if !strings.Contains(output, "persistent_keepalive_interval=25") {
-		t.Errorf("expected persistent_keepalive in output, got:\n%s", output)
 	}
 	if !strings.Contains(output, "active=0") {
 		t.Errorf("expected active=0 in output, got:\n%s", output)
@@ -176,9 +186,6 @@ func TestHandleSetAddPeer(t *testing.T) {
 	}
 	if len(p.AllowedIPs) != 1 || p.AllowedIPs[0] != netip.MustParsePrefix("10.0.1.0/24") {
 		t.Errorf("AllowedIPs = %v", p.AllowedIPs)
-	}
-	if p.PersistentKeepalive != 30 {
-		t.Errorf("PersistentKeepalive = %d", p.PersistentKeepalive)
 	}
 	if got := base64.StdEncoding.EncodeToString(p.PublicKey); got != pubB64 {
 		t.Errorf("PublicKey = %s, want %s", got, pubB64)

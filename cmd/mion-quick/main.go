@@ -6,7 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/pabotesu/mion/internal/platform"
 )
 
 func main() {
@@ -83,17 +87,29 @@ func cmdUp(nameOrPath string) error {
 	return nil
 }
 
-// cmdDown stops miond for the given interface.
+// cmdDown stops miond for the given interface using the PID file.
 func cmdDown(nameOrPath string) error {
 	ifname, _ := resolveConfig(nameOrPath)
 
-	fmt.Printf("[#] Stopping miond for %s\n", ifname)
+	pidPath := platform.PIDPath(ifname)
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("cannot read PID file %s (is miond running?): %w", pidPath, err)
+	}
 
-	// Send SIGTERM to miond via pkill (simple approach)
-	// In a production implementation, we'd read a PID file or use the UAPI socket.
-	cmd := exec.Command("pkill", "-f", fmt.Sprintf("miond.*-interface.*%s", ifname))
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to stop miond (is it running?): %w", err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return fmt.Errorf("invalid PID file %s: %w", pidPath, err)
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("cannot find process %d: %w", pid, err)
+	}
+
+	fmt.Printf("[#] Stopping miond (pid=%d) for %s\n", pid, ifname)
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("failed to signal miond (pid=%d): %w", pid, err)
 	}
 
 	fmt.Printf("[#] miond stopped for %s\n", ifname)

@@ -30,6 +30,12 @@ import (
 // HTTP/2 CONNECT-IP implementation.
 const capsuleTypeIPPacket uint64 = 0
 
+// maxCapsuleLen is the maximum capsule payload length we will process.
+// Capsules larger than this are rejected to prevent resource exhaustion by
+// a misbehaving (but authenticated) peer.
+// 64 KiB covers the maximum IPv4/IPv6 packet size (65535 bytes) with margin.
+const maxCapsuleLen uint64 = 65536
+
 // Conn implements transport.TunnelConn over an HTTP/2 byte stream using
 // capsule framing. It is safe for concurrent use by multiple goroutines.
 type Conn struct {
@@ -84,11 +90,18 @@ func (c *Conn) ReadPacket(buf []byte) (int, error) {
 			return 0, fmt.Errorf("h2: capsule length: %w", err)
 		}
 		if ct != capsuleTypeIPPacket {
+			// Reject oversized unknown capsules to prevent resource exhaustion.
+			if payloadLen > maxCapsuleLen {
+				return 0, fmt.Errorf("h2: unknown capsule type %d length %d exceeds limit %d", ct, payloadLen, maxCapsuleLen)
+			}
 			// Discard unknown capsule types (forward-compatibility).
 			if _, err := io.CopyN(io.Discard, c.rd, int64(payloadLen)); err != nil {
 				return 0, fmt.Errorf("h2: discard capsule type %d: %w", ct, err)
 			}
 			continue
+		}
+		if payloadLen > maxCapsuleLen {
+			return 0, fmt.Errorf("h2: IP packet capsule length %d exceeds limit %d", payloadLen, maxCapsuleLen)
 		}
 		if int(payloadLen) > len(buf) {
 			return 0, fmt.Errorf("h2: packet (%d B) exceeds buffer (%d B)", payloadLen, len(buf))

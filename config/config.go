@@ -50,8 +50,7 @@ type PeerConfig struct {
 	// Must include a scheme:
 	//   "http3://host:port"  — HTTP/3 (QUIC) transport
 	//   "http2://host:port"  — HTTP/2 (TLS/TCP) transport
-	Endpoint            string
-	PersistentKeepalive int // seconds (0 = disabled)
+	Endpoint string
 }
 
 // Parse reads a WireGuard-style config from r.
@@ -162,12 +161,6 @@ func parsePeerField(peer *PeerConfig, key, value string) error {
 			return fmt.Errorf("config: invalid Endpoint %q: %w", value, err)
 		}
 		peer.Endpoint = value
-	case "PersistentKeepalive":
-		secs, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("config: invalid PersistentKeepalive %q: %w", value, err)
-		}
-		peer.PersistentKeepalive = secs
 	default:
 		return fmt.Errorf("config: unknown Peer key %q", key)
 	}

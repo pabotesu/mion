@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pabotesu/mion/internal/platform"
+	"github.com/pabotesu/mion/internal/version"
 )
 
 func main() {
@@ -25,6 +26,9 @@ func main() {
 
 	// Subcommands that don't require an interface name
 	switch subcmd {
+	case "version":
+		fmt.Printf("mion %s\n", version.Version)
+		return
 	case "genkey":
 		if err := cmdGenkey(); err != nil {
 			fmt.Fprintf(os.Stderr, "mion genkey: %v\n", err)
@@ -186,41 +190,98 @@ func cmdShow(ifname string) error {
 		return nil
 	}
 
-	fmt.Printf("interface: %s\n", ifname)
-	inPeer := false
+	// Parse all lines into a structured form first
+	type peerInfo struct {
+		publicKey  string
+		peerID     string
+		endpoint   string
+		allowedIPs []string
+		active     string
+		errno      string
+		extra      []string
+	}
+
+	var role string
+	var listenPort string
+	var listenEndpoints []string
+	var peers []peerInfo
+	var cur *peerInfo
+
 	for _, line := range lines {
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
 		key, val := parts[0], parts[1]
-
 		switch key {
-		case "private_key":
-			fmt.Printf("  private key: (hidden)\n")
+		case "role":
+			role = val
 		case "listen_port":
-			fmt.Printf("  listening port: %s\n", val)
+			listenPort = val
+		case "listen_endpoint":
+			listenEndpoints = append(listenEndpoints, val)
 		case "public_key":
-			if inPeer {
-				fmt.Println() // separator between peers
+			if cur != nil {
+				peers = append(peers, *cur)
 			}
-			fmt.Printf("\npeer:\n")
-			fmt.Printf("  public key: %s\n", val)
-			inPeer = true
+			cur = &peerInfo{publicKey: val}
 		case "peer_id":
-			if !inPeer {
-				fmt.Printf("\npeer:\n")
-				inPeer = true
+			if cur == nil {
+				cur = &peerInfo{}
 			}
-			fmt.Printf("  peer id: %s\n", val)
+			cur.peerID = val
 		case "endpoint":
-			fmt.Printf("  endpoint: %s\n", val)
+			if cur != nil {
+				cur.endpoint = val
+			}
 		case "allowed_ip":
-			fmt.Printf("  allowed ips: %s\n", val)
-		case "persistent_keepalive_interval":
-			fmt.Printf("  persistent keepalive: every %s seconds\n", val)
-		default:
-			fmt.Printf("  %s: %s\n", key, val)
+			if cur != nil {
+				cur.allowedIPs = append(cur.allowedIPs, val)
+			}
+		case "active":
+			if cur != nil {
+				cur.active = val
+			}
+		case "errno":
+			if cur != nil {
+				cur.errno = val
+			}
+		}
+	}
+	if cur != nil {
+		peers = append(peers, *cur)
+	}
+
+	// Print interface section
+	fmt.Printf("interface: %s\n", ifname)
+	if role != "" {
+		fmt.Printf("  role: %s\n", role)
+	}
+	if len(listenEndpoints) > 0 {
+		fmt.Printf("  listening endpoints: %s\n", strings.Join(listenEndpoints, ", "))
+	} else if listenPort != "" {
+		fmt.Printf("  listening HTTP3 port: %s\n", listenPort)
+	}
+
+	// Print peers
+	for _, p := range peers {
+		fmt.Printf("\npeer:\n")
+		if p.publicKey != "" {
+			fmt.Printf("  public key: %s\n", p.publicKey)
+		}
+		if p.peerID != "" {
+			fmt.Printf("  peer id: %s\n", p.peerID)
+		}
+		if p.endpoint != "" {
+			fmt.Printf("  endpoint: %s\n", p.endpoint)
+		}
+		if len(p.allowedIPs) > 0 {
+			fmt.Printf("  allowed ips: %s\n", strings.Join(p.allowedIPs, ", "))
+		}
+		if p.active == "1" {
+			fmt.Printf("  active: yes\n")
+		} else {
+			fmt.Printf("  active: no\n")
 		}
 	}
 	fmt.Println()

@@ -6,8 +6,9 @@ mion は、HTTP/3 / HTTP/2 上の MASQUE CONNECT-IP を用いた L3 オーバー
 既存の VPN サービスが通れないような HTTP のみ許可されたファイアウォール環境でも、mion は HTTP/3（QUIC/UDP）または HTTP/2（TLS/TCP）上で動作することが期待できます。
 
 ```
-client ──CONNECT-IP over HTTP/3 (UDP:443)───> proxy <──── client
-client ──CONNECT-IP over HTTP/2 (TCP:4443)──> proxy <──── client
+client ──CONNECT-IP over HTTP/3 (UDP:443)───> proxy
+client ──CONNECT-IP over HTTP/2 (TCP:443)──> proxy
+client ──CONNECT-IP over HTTP/3 (UDP:443)───> proxy <────CONNECT-IP over HTTP/2 (TCP:443) client
 ```
 
 ## 特徴
@@ -17,7 +18,7 @@ client ──CONNECT-IP over HTTP/2 (TCP:4443)──> proxy <──── client
 - **mTLS 相互認証** — Ed25519 自己署名証明書による公開鍵ベース認証、CA 不要
 - **WireGuard ライクな操作** — 設定ファイル形式・CLI・鍵管理が WireGuard に準拠
 - **単一 UDP ソケット** — HTTP/3 はすべての通信を 1 つのソケットで処理し NAT mapping を維持
-- **Keepalive / Roaming / Failover** — 接続維持・endpoint 追従・自動切替
+- **Keepalive** — 接続維持（死亡検知時に自動再接続）
 - **hub 中継対応** — proxy を中心とした複数 client 間のルーティングをサポート
 
 ## プラットフォーム対応
@@ -36,8 +37,8 @@ client ──CONNECT-IP over HTTP/2 (TCP:4443)──> proxy <──── client
 │                                                  │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐   │
 │  │ Identity │  │   Auth   │  │   Keepalive   │   │
-│  │ Ed25519  │  │  mTLS    │  │   Roaming     │   │
-│  │ PeerID   │  │          │  │   Failover    │   │
+│  │ Ed25519  │  │  mTLS    │  │  (liveness)   │   │
+│  │ PeerID   │  │          │  │               │   │
 │  └──────────┘  └──────────┘  └───────────────┘   │
 │                                                  │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────┐   │
@@ -67,14 +68,15 @@ internal/
 ├── failover/       endpoint フェイルオーバー
 ├── identity/       Ed25519 鍵管理・PeerID 導出・自己署名証明書
 ├── ipc/            UAPI プロトコル (UNIX ドメインソケット)
-├── keepalive/      Persistent keepalive
+├── keepalive/      接続死亡検知・HTTP/2 keepalive カプセル送信
 ├── mion/           コアオーケストレーション
 ├── peer/           Peer 状態管理・KnownPeers レジストリ
 ├── platform/       プラットフォーム固有パス (Linux/macOS/Windows)
-├── proxy/          HTTP/3 + CONNECT-IP サーバ
-├── roaming/        endpoint ローミング検知
+├── proxy/          HTTP/3 + HTTP/2 + CONNECT-IP サーバ
 ├── routing/        AllowedIPs ルーティングテーブル
-└── tunnel/         TUN デバイス (Linux/macOS 実装 + stub)
+├── transport/      TunnelConn インターフェース・H2/H3 実装
+├── tunnel/         TUN デバイス (Linux/macOS 実装 + stub)
+└── version/        バージョン情報
 ```
 
 ## 必要要件
@@ -87,9 +89,15 @@ internal/
 ## ビルド
 
 ```bash
-go build -o bin/miond       ./cmd/miond
-go build -o bin/mion        ./cmd/mion
-go build -o bin/mion-quick  ./cmd/mion-quick
+go build -ldflags "-X github.com/pabotesu/mion/internal/version.Version=v0.2.0" -o bin/miond       ./cmd/miond
+go build -ldflags "-X github.com/pabotesu/mion/internal/version.Version=v0.2.0" -o bin/mion        ./cmd/mion
+go build -ldflags "-X github.com/pabotesu/mion/internal/version.Version=v0.2.0" -o bin/mion-quick  ./cmd/mion-quick
+```
+
+バージョンを埋め込まない場合は `-ldflags` を省略（`dev` と表示されます）:
+
+```bash
+go build -o bin/miond ./cmd/miond
 ```
 
 クロスコンパイル例:
@@ -127,12 +135,10 @@ Role = proxy
 [Peer]
 PublicKey = <client01 の公開鍵>
 AllowedIPs = 100.100.0.1/32
-PersistentKeepalive = 25
 
 [Peer]
 PublicKey = <client02 の公開鍵>
 AllowedIPs = 100.100.0.2/32
-PersistentKeepalive = 25
 ```
 
 ### client (`/etc/mion/mi0n.conf`)
@@ -148,7 +154,6 @@ PublicKey = <proxy の公開鍵>
 Endpoint = http3://<proxy の IP>:443    # HTTP/3 の場合
 # Endpoint = http2://<proxy の IP>:4443 # HTTP/2 の場合
 AllowedIPs = 100.100.0.3/32, 100.100.0.2/32
-PersistentKeepalive = 25
 ```
 
 ### 設定項目一覧
@@ -162,7 +167,6 @@ PersistentKeepalive = 25
 | `[Peer]` | `PublicKey` | 相手の Ed25519 公開鍵 (base64) |
 | | `AllowedIPs` | 相手に許可する IP prefix (カンマ区切り可) |
 | | `Endpoint` | 相手のアドレス。`http3://host:port` または `http2://host:port` 形式 (client→proxy で必須) |
-| | `PersistentKeepalive` | Keepalive 間隔 (秒、0 = 無効) |
 
 ## 起動
 
@@ -270,8 +274,7 @@ sequenceDiagram
 |---|---|
 | **Keepalive (HTTP/3)** | QUIC レベルの `KeepAlivePeriod`（25秒）で NAT state を維持 |
 | **Keepalive (HTTP/2)** | 空カプセル（0バイト）を定期送信して TCP セッションを維持 |
-| **Roaming** | 動的 endpoint のピアからのアドレス変化を検知し自動更新（HTTP/3 のみ） |
-| **自動再接続** | 接続断を検知すると指数バックオフ（2s〜30s）で自動リトライ |
+| **死亡検知・自動再接続** | 50秒無応答で接続を切断し、指数バックオフ（2s〜30s）で自動リトライ |
 | **ランタイム切り替え** | `mion set` で HTTP/3 ↔ HTTP/2 をパケットロスなしで切り替え可 |
 
 ## テスト
@@ -283,7 +286,7 @@ go test ./...
 ## 開発フェーズ
 
 - [x] **Phase 1**: 最小接続成立 — Proxy/Client, HTTP/3+MASQUE+CONNECT-IP, mTLS, KnownPeers, AllowedIPs, TUN, UAPI
-- [x] **Phase 2**: 接続維持 — Keepalive, Roaming, 自動再接続
+- [x] **Phase 2**: 接続維持 — Keepalive、自動再接続
 - [x] **Phase 3**: 接続安定化 — Linux 実機での TUN/ping 検証、Proxy 再起動時の自動復帰確認
 - [x] **Phase 4**: macOS 対応 — utun デバイスによる macOS でのフル動作確認
 - [x] **Phase 5**: HTTP/2 対応 — TLS/TCP 上の CONNECT-IP トンネル、HTTP/3 ↔ HTTP/2 ランタイム切り替え検証

@@ -18,7 +18,6 @@ Role = proxy
 PublicKey = dGVzdHB1YmxpY2tleTEyMzQ1Njc4OTAxMjM0NTY3
 AllowedIPs = 10.0.0.2/32, 192.168.1.0/24
 Endpoint = http3://203.0.113.1:51820
-PersistentKeepalive = 25
 `
 
 	cfg, err := Parse(strings.NewReader(input))
@@ -58,9 +57,6 @@ PersistentKeepalive = 25
 	}
 	if p.Endpoint != "http3://203.0.113.1:51820" {
 		t.Errorf("Endpoint = %q", p.Endpoint)
-	}
-	if p.PersistentKeepalive != 25 {
-		t.Errorf("PersistentKeepalive = %d", p.PersistentKeepalive)
 	}
 }
 
