@@ -260,7 +260,7 @@ func cmdShow(ifname string) error {
 	if len(listenEndpoints) > 0 {
 		fmt.Printf("  listening endpoints: %s\n", strings.Join(listenEndpoints, ", "))
 	} else if listenPort != "" {
-		fmt.Printf("  listening port: %s\n", listenPort)
+		fmt.Printf("  listening HTTP3 port: %s\n", listenPort)
 	}
 
 	// Print peers
