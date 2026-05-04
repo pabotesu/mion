@@ -300,8 +300,9 @@ func (c *Client) ForwardConnToTUN(p *peer.Peer) error {
 			p.ClearConnIf(conn)
 			return fmt.Errorf("client: read from peer %s failed: %w", p.DisplayID(), err)
 		}
-		// n==0 means a keepalive empty capsule; skip silently.
+		// n==0 means a keepalive pong capsule from proxy; update liveness timestamp.
 		if n == 0 {
+			p.UpdateLastReceive()
 			continue
 		}
 		pkt := buf[:n]
