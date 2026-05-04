@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pabotesu/mion/internal/platform"
+	"github.com/pabotesu/mion/internal/version"
 )
 
 func main() {
@@ -25,6 +26,9 @@ func main() {
 
 	// Subcommands that don't require an interface name
 	switch subcmd {
+	case "version":
+		fmt.Printf("mion %s\n", version.Version)
+		return
 	case "genkey":
 		if err := cmdGenkey(); err != nil {
 			fmt.Fprintf(os.Stderr, "mion genkey: %v\n", err)

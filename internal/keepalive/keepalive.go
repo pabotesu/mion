@@ -1,12 +1,14 @@
-// Package keepalive provides per-peer persistent keepalive for MION.
+// Package keepalive provides per-peer liveness monitoring for MION.
 //
 // HTTP/3 peers: actual keepalive packets are sent automatically by QUIC's
-// KeepAlivePeriod; this manager only tracks receive timestamps so that the
-// failover manager can detect dead peers.
+// KeepAlivePeriod; this manager tracks receive timestamps and closes dead
+// connections so that client.StartRetry can reconnect.
 //
 // HTTP/2 peers: QUIC is not used, so this manager sends an empty capsule
 // (zero-length WritePacket) at each keepalive interval to keep the TCP
-// session and any NAT mapping alive (requirements §11).
+// session and any NAT mapping alive.
+// If no data is received for 2× the interval, the connection is closed so
+// that client.StartRetry can reconnect.
 package keepalive
 
 import (
@@ -17,9 +19,11 @@ import (
 	"github.com/pabotesu/mion/internal/peer"
 )
 
-// Manager monitors peer liveness. Actual keepalive packets are sent by
-// QUIC's KeepAlivePeriod; this manager only tracks receive timestamps
-// so that the failover manager can detect dead peers.
+// keepaliveInterval is the fixed interval for liveness checks and HTTP/2 keepalive capsules.
+const keepaliveInterval = 25 * time.Second
+
+// Manager monitors peer liveness and closes dead connections so that
+// client.StartRetry can detect the failure and reconnect.
 type Manager struct {
 	peers *peer.KnownPeers
 }
@@ -30,7 +34,7 @@ func NewManager(peers *peer.KnownPeers) *Manager {
 }
 
 // Run starts the keepalive monitor. It checks all peers every second
-// and marks inactive peers whose last receive exceeds 2× the interval.
+// and closes connections that have been silent for 2× keepaliveInterval.
 // It blocks until the context is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(1 * time.Second)
@@ -46,38 +50,31 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// tick checks each peer's liveness based on receive timestamps.
-// For HTTP/2 peers it also sends an empty keepalive capsule.
+// tick checks each peer's liveness and sends HTTP/2 keepalive capsules.
 func (m *Manager) tick() {
 	now := time.Now()
 	for _, p := range m.peers.All() {
-		if p.PersistentKeepalive <= 0 {
-			continue
-		}
-
 		conn := p.GetConn()
 		if conn == nil {
 			continue
 		}
 
-		interval := time.Duration(p.PersistentKeepalive) * time.Second
-
-		// HTTP/2 peers: QUIC KeepAlivePeriod is not available, so we send
-		// an empty capsule at each interval to keep the TCP session alive.
+		// HTTP/2 peers: send an empty capsule to keep the TCP session alive.
 		if p.GetEndpointScheme() == "http2" {
 			lastRecv := p.GetLastReceive()
-			if lastRecv.IsZero() || now.Sub(lastRecv) >= interval {
+			if lastRecv.IsZero() || now.Sub(lastRecv) >= keepaliveInterval {
 				if err := conn.WritePacket([]byte{}); err != nil {
 					log.Printf("[keepalive] peer %s http2 ping failed: %v", p.PeerID, err)
 				}
 			}
 		}
 
-		// If no data received for 2× interval, mark peer as inactive
-		// so failover manager can trigger reconnection.
+		// If no data received for 2× interval, close the connection.
+		// ForwardConnToTUN will detect the error and StartRetry will reconnect.
 		lastRecv := p.GetLastReceive()
-		if !lastRecv.IsZero() && now.Sub(lastRecv) >= 2*interval {
-			p.SetActive(false)
+		if !lastRecv.IsZero() && now.Sub(lastRecv) >= 2*keepaliveInterval {
+			log.Printf("[keepalive] peer %s silent for %s, closing connection", p.PeerID, now.Sub(lastRecv).Round(time.Second))
+			_ = conn.Close()
 		}
 	}
 }

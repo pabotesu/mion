@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pabotesu/mion/config"
@@ -23,6 +24,8 @@ import (
 	"github.com/pabotesu/mion/internal/ipc"
 	"github.com/pabotesu/mion/internal/mion"
 	"github.com/pabotesu/mion/internal/peer"
+	"github.com/pabotesu/mion/internal/platform"
+	"github.com/pabotesu/mion/internal/version"
 )
 
 func main() {
@@ -30,6 +33,7 @@ func main() {
 	ifaceName := flag.String("interface", "mion0", "TUN interface name")
 	flag.Parse()
 
+	log.Printf("[miond] mion %s starting", version.Version)
 	if err := run(*configPath, *ifaceName); err != nil {
 		log.Fatalf("[miond] fatal: %v", err)
 	}
@@ -96,7 +100,18 @@ func run(configPath, ifaceName string) error {
 	log.Printf("[miond] role=%s peers=%d listenPort=%d",
 		cfg.Interface.Role, m.Peers().Len(), cfg.Interface.ListenPort)
 
-	// 6. Start UAPI listener
+	// 6. Write PID file
+	pidPath := platform.PIDPath(ifaceName)
+	if err := os.MkdirAll(platform.RuntimeDir(), 0o750); err != nil {
+		log.Printf("[miond] warning: cannot create runtime dir: %v", err)
+	} else if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o640); err != nil {
+		log.Printf("[miond] warning: cannot write PID file %s: %v", pidPath, err)
+	} else {
+		defer os.Remove(pidPath)
+		log.Printf("[miond] PID %d written to %s", os.Getpid(), pidPath)
+	}
+
+	// 7. Start UAPI listener
 	uapiLn, err := ipc.NewUAPIListener(ifaceName)
 	if err != nil {
 		log.Printf("[miond] UAPI warning: %v (CLI control disabled)", err)
@@ -106,7 +121,7 @@ func run(configPath, ifaceName string) error {
 		log.Printf("[miond] UAPI listening on %s", uapiLn.Addr())
 	}
 
-	// 7. Run under daemon lifecycle (blocks until signal)
+	// 8. Run under daemon lifecycle (blocks until signal)
 	return daemon.Run(func(ctx context.Context) error {
 		defer func() {
 			if uapiLn != nil {
@@ -152,10 +167,6 @@ func peerFromConfig(pc config.PeerConfig) (*peer.Peer, error) {
 		p.Endpoint = ep
 		p.EndpointScheme = strings.ToLower(u.Scheme) // "http3" or "http2"
 		p.ConfiguredEndpoint = true
-	}
-
-	if pc.PersistentKeepalive > 0 {
-		p.PersistentKeepalive = pc.PersistentKeepalive
 	}
 
 	return p, nil

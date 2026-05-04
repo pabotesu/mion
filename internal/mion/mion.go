@@ -142,6 +142,23 @@ func (m *Mion) RemovePeer(id identity.PeerID) {
 	log.Printf("[mion] removed peer %s", id)
 }
 
+// UpdatePeerAllowedIPs replaces the AllowedIPs for an existing peer and
+// atomically updates the routing table to match.
+func (m *Mion) UpdatePeerAllowedIPs(id identity.PeerID, prefixes []netip.Prefix) error {
+	p := m.peers.Lookup(id)
+	if p == nil {
+		return fmt.Errorf("mion: peer %s not found", id)
+	}
+	// Remove all existing routing entries for this peer.
+	m.allowedIPs.Remove(id)
+	// Insert the new prefixes.
+	for _, prefix := range prefixes {
+		m.allowedIPs.Insert(prefix, id)
+	}
+	log.Printf("[mion] updated allowed_ips for peer %s: %d prefixes", p.DisplayID(), len(prefixes))
+	return nil
+}
+
 // ReconnectPeer tears down the existing connection for a peer and
 // re-establishes it using the peer's current endpoint.
 // This is called when the endpoint is changed at runtime via UAPI.
