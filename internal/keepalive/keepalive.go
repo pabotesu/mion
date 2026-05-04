@@ -7,30 +7,40 @@
 // HTTP/2 peers: QUIC is not used, so this manager sends an empty capsule
 // (zero-length WritePacket) at each keepalive interval to keep the TCP
 // session and any NAT mapping alive.
-// If no data is received for 2× the interval, the connection is closed so
-// that client.StartRetry can reconnect.
+// If no pong is received within pongTimeout after the first ping, the
+// connection is closed so that client.StartRetry can reconnect.
 package keepalive
 
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
+	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/peer"
 )
 
-// keepaliveInterval is the fixed interval for liveness checks and HTTP/2 keepalive capsules.
+// keepaliveInterval is the fixed interval for sending HTTP/2 keepalive capsules.
 const keepaliveInterval = 10 * time.Second
+
+// pongTimeout is the maximum time to wait for a Pong after sending a Ping.
+const pongTimeout = 5 * time.Second
 
 // Manager monitors peer liveness and closes dead connections so that
 // client.StartRetry can detect the failure and reconnect.
 type Manager struct {
-	peers *peer.KnownPeers
+	peers      *peer.KnownPeers
+	mu         sync.Mutex
+	pingSentAt map[identity.PeerID]time.Time
 }
 
 // NewManager creates a keepalive manager.
 func NewManager(peers *peer.KnownPeers) *Manager {
-	return &Manager{peers: peers}
+	return &Manager{
+		peers:      peers,
+		pingSentAt: make(map[identity.PeerID]time.Time),
+	}
 }
 
 // Run starts the keepalive monitor. It checks all peers every second
@@ -63,9 +73,35 @@ func (m *Manager) tick() {
 		if p.GetEndpointScheme() == "http2" {
 			lastRecv := p.GetLastReceive()
 			if lastRecv.IsZero() || now.Sub(lastRecv) >= keepaliveInterval {
+				// Send Ping
 				if err := conn.WritePacket([]byte{}); err != nil {
 					log.Printf("[keepalive] peer %s http2 ping failed: %v", p.PeerID, err)
+				} else {
+					// Record first ping sent time (don't overwrite if already waiting)
+					m.mu.Lock()
+					if _, exists := m.pingSentAt[p.PeerID]; !exists {
+						m.pingSentAt[p.PeerID] = now
+					}
+					m.mu.Unlock()
 				}
+			} else {
+				// Data received recently — clear ping tracking
+				m.mu.Lock()
+				delete(m.pingSentAt, p.PeerID)
+				m.mu.Unlock()
+			}
+
+			// Pong timeout: close if no response within pongTimeout after first Ping
+			m.mu.Lock()
+			pingSent, waiting := m.pingSentAt[p.PeerID]
+			m.mu.Unlock()
+			if waiting && now.Sub(pingSent) >= pongTimeout {
+				log.Printf("[keepalive] peer %s pong timeout after %s, closing connection", p.PeerID, pongTimeout)
+				_ = conn.Close()
+				m.mu.Lock()
+				delete(m.pingSentAt, p.PeerID)
+				m.mu.Unlock()
+				continue
 			}
 		}
 
