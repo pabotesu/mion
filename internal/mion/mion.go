@@ -56,18 +56,19 @@ type Config struct {
 
 // Mion is the core MION instance. It owns all shared resources.
 type Mion struct {
-	cfg          Config
-	peerID       identity.PeerID
-	udpConn      *net.UDPConn
-	tun          tunnel.Device
-	peers        *peer.KnownPeers
-	allowedIPs   *routing.AllowedIPs
-	cancel       context.CancelFunc
-	ctx          context.Context
-	reconnectFn  func(context.Context, *peer.Peer) error
-	client       *client.Client
-	clientReady  chan struct{} // closed when m.client is set (client role only)
-	quicTransport *quic.Transport // non-nil after clientReady is closed (client role only)
+	cfg           Config
+	peerID        identity.PeerID
+	udpConn       *net.UDPConn
+	tun           tunnel.Device
+	peers         *peer.KnownPeers
+	allowedIPs    *routing.AllowedIPs
+	cancel        context.CancelFunc
+	ctx           context.Context
+	reconnectFn   func(context.Context, *peer.Peer) error
+	client        *client.Client
+	clientReady   chan struct{} // closed when m.client is set (client role only)
+	proxyReady    chan struct{} // closed when proxy quic.Transport is set (proxy role only)
+	quicTransport *quic.Transport // non-nil after clientReady or proxyReady is closed
 }
 
 // New creates and initializes a Mion instance.
@@ -95,6 +96,7 @@ func New(cfg Config) (*Mion, error) {
 		peers:       peer.NewKnownPeers(),
 		allowedIPs:  routing.NewAllowedIPs(),
 		clientReady: make(chan struct{}),
+		proxyReady:  make(chan struct{}),
 	}, nil
 }
 
@@ -218,6 +220,15 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 	}()
 
 	return nil
+}
+
+// ProxyReady returns a channel that is closed once the proxy's quic.Transport
+// is initialized (i.e. the first HTTP/3 listener has bound its UDP socket).
+// External callers (e.g. MALON) should wait on this channel before calling
+// QUICTransport() in the proxy role. For the client role the channel is never
+// closed; use ClientReady() instead.
+func (m *Mion) ProxyReady() <-chan struct{} {
+	return m.proxyReady
 }
 
 // QUICTransport returns the shared *quic.Transport used by the client role.
@@ -391,6 +402,16 @@ func (m *Mion) runProxy(ctx context.Context, certDER []byte) error {
 	}
 
 	p := proxy.NewProxy(m.cfg.ListenEndpoints, m.peers, m.allowedIPs, m.tun, tlsCfg, m.cfg.Address)
+
+	// Wait for the proxy's quic.Transport to be ready and expose it via QUICTransport().
+	go func() {
+		select {
+		case <-p.TransportReady():
+			m.quicTransport = p.QUICTransport()
+			close(m.proxyReady)
+		case <-m.ctx.Done():
+		}
+	}()
 
 	// Start keepalive manager (requirements §11)
 	ka := keepalive.NewManager(m.peers)
