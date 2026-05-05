@@ -64,6 +64,7 @@ type Mion struct {
 	ctx         context.Context
 	reconnectFn func(context.Context, *peer.Peer) error
 	client      *client.Client
+	clientReady chan struct{} // closed when m.client is set (client role only)
 }
 
 // New creates and initializes a Mion instance.
@@ -85,11 +86,12 @@ func New(cfg Config) (*Mion, error) {
 	}
 
 	return &Mion{
-		cfg:        cfg,
-		peerID:     peerID,
-		tun:        tun,
-		peers:      peer.NewKnownPeers(),
-		allowedIPs: routing.NewAllowedIPs(),
+		cfg:         cfg,
+		peerID:      peerID,
+		tun:         tun,
+		peers:       peer.NewKnownPeers(),
+		allowedIPs:  routing.NewAllowedIPs(),
+		clientReady: make(chan struct{}),
 	}, nil
 }
 
@@ -211,6 +213,15 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 	return nil
 }
 
+// ClientReady returns a channel that is closed once the client is initialized
+// (i.e. m.client has been set in runClient). External callers (e.g. MALON)
+// should wait on this channel before calling StartForwardConnToTUN.
+// For the proxy role the channel is never closed; callers should also select
+// on ctx.Done() to avoid blocking indefinitely.
+func (m *Mion) ClientReady() <-chan struct{} {
+	return m.clientReady
+}
+
 // StartForwardConnToTUN starts a goroutine that reads packets from p.Conn
 // (set via peer.Peer.SetConn) and writes them to TUN.
 // When the connection is closed the goroutine exits silently — no retry is
@@ -310,6 +321,7 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 
 	c := client.NewClient(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg)
 	m.client = c
+	close(m.clientReady) // signal that m.client is ready for external callers
 	if err := c.DialAllPeers(ctx); err != nil {
 		return fmt.Errorf("mion: dial peers: %w", err)
 	}
