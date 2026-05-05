@@ -57,6 +57,13 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 	}
 }
 
+// QUICTransport returns the shared QUIC transport used for all outbound dials.
+// External callers (e.g. MALON) can use this to register additional ALPN listeners
+// on the same UDP socket via transport.Listen().
+func (c *Client) QUICTransport() *quic.Transport {
+	return c.transport
+}
+
 // DialPeer establishes a CONNECT-IP session with a single peer (proxy).
 // The transport protocol is selected by p.EndpointScheme ("http3" or "http2").
 func (c *Client) DialPeer(ctx context.Context, p *peer.Peer) error {
