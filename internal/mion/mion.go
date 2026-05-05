@@ -63,6 +63,7 @@ type Mion struct {
 	cancel      context.CancelFunc
 	ctx         context.Context
 	reconnectFn func(context.Context, *peer.Peer) error
+	client      *client.Client
 }
 
 // New creates and initializes a Mion instance.
@@ -210,7 +211,29 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 	return nil
 }
 
+// StartForwardConnToTUN starts a goroutine that reads packets from p.Conn
+// (set via peer.Peer.SetConn) and writes them to TUN.
+// When the connection is closed the goroutine exits silently — no retry is
+// triggered, because the caller (MALON) is responsible for managing the relay
+// connection lifecycle.
+// This is intended for relay connections injected by MALON: after calling
+// peer.Peer.SetConn(relayConn), call this method to activate Conn→TUN forwarding.
+// TUN→Conn forwarding works automatically via AllowedIPs routing without any
+// additional call.
+func (m *Mion) StartForwardConnToTUN(ctx context.Context, p *peer.Peer) {
+	if m.client == nil {
+		log.Printf("[mion] StartForwardConnToTUN: client not initialized (proxy role?)")
+		return
+	}
+	go func() {
+		if err := m.client.ForwardConnToTUN(p); err != nil {
+			log.Printf("[mion] relay conn to peer %s closed: %v", p.DisplayID(), err)
+		}
+	}()
+}
+
 // Close tears down the Mion instance.
+
 func (m *Mion) Close() error {
 	if m.cancel != nil {
 		m.cancel()
@@ -286,8 +309,7 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 	}
 
 	c := client.NewClient(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg)
-
-	// Dial all known peers that have endpoints
+	m.client = c
 	if err := c.DialAllPeers(ctx); err != nil {
 		return fmt.Errorf("mion: dial peers: %w", err)
 	}
