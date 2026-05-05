@@ -11,13 +11,15 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/quic-go/quic-go"
+
 	"github.com/pabotesu/mion/config"
 	"github.com/pabotesu/mion/internal/auth"
 	"github.com/pabotesu/mion/internal/client"
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/keepalive"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/proxy"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
@@ -54,15 +56,19 @@ type Config struct {
 
 // Mion is the core MION instance. It owns all shared resources.
 type Mion struct {
-	cfg         Config
-	peerID      identity.PeerID
-	udpConn     *net.UDPConn
-	tun         tunnel.Device
-	peers       *peer.KnownPeers
-	allowedIPs  *routing.AllowedIPs
-	cancel      context.CancelFunc
-	ctx         context.Context
-	reconnectFn func(context.Context, *peer.Peer) error
+	cfg           Config
+	peerID        identity.PeerID
+	udpConn       *net.UDPConn
+	tun           tunnel.Device
+	peers         *peer.KnownPeers
+	allowedIPs    *routing.AllowedIPs
+	cancel        context.CancelFunc
+	ctx           context.Context
+	reconnectFn   func(context.Context, *peer.Peer) error
+	client        *client.Client
+	clientReady   chan struct{} // closed when m.client is set (client role only)
+	proxyReady    chan struct{} // closed when proxy quic.Transport is set (proxy role only)
+	quicTransport *quic.Transport // non-nil after clientReady or proxyReady is closed
 }
 
 // New creates and initializes a Mion instance.
@@ -84,11 +90,13 @@ func New(cfg Config) (*Mion, error) {
 	}
 
 	return &Mion{
-		cfg:        cfg,
-		peerID:     peerID,
-		tun:        tun,
-		peers:      peer.NewKnownPeers(),
-		allowedIPs: routing.NewAllowedIPs(),
+		cfg:         cfg,
+		peerID:      peerID,
+		tun:         tun,
+		peers:       peer.NewKnownPeers(),
+		allowedIPs:  routing.NewAllowedIPs(),
+		clientReady: make(chan struct{}),
+		proxyReady:  make(chan struct{}),
 	}, nil
 }
 
@@ -142,6 +150,10 @@ func (m *Mion) AllowedIPs() *routing.AllowedIPs { return m.allowedIPs }
 
 // AddPeer registers a peer and populates the AllowedIPs table.
 func (m *Mion) AddPeer(p *peer.Peer) error {
+	// Auto-derive PeerID from PublicKey if not set by the caller.
+	if p.PublicKey != nil && p.PeerID == (identity.PeerID{}) {
+		p.PeerID = identity.PeerIDFromPublicKey(p.PublicKey)
+	}
 	if err := m.peers.Add(p); err != nil {
 		return err
 	}
@@ -210,7 +222,61 @@ func (m *Mion) ReconnectPeer(id identity.PeerID) error {
 	return nil
 }
 
+// ProxyReady returns a channel that is closed once the proxy's quic.Transport
+// is initialized (i.e. the first HTTP/3 listener has bound its UDP socket).
+// External callers (e.g. MALON) should wait on this channel before calling
+// QUICTransport() in the proxy role. For the client role the channel is never
+// closed; use ClientReady() instead.
+func (m *Mion) ProxyReady() <-chan struct{} {
+	return m.proxyReady
+}
+
+// QUICTransport returns the shared *quic.Transport used by the client role.
+// It is safe to call after ClientReady() is closed.
+// For the proxy role this returns nil (proxy creates per-endpoint listeners
+// without an explicit quic.Transport; support can be added if needed).
+//
+// MALON can use the returned transport to register additional ALPN listeners
+// (e.g. "malon-probe") on the same UDP socket:
+//
+//	<-mionInst.ClientReady()
+//	qt := mionInst.QUICTransport()
+//	ln, err := qt.Listen(malonTLSCfg, &quic.Config{})
+func (m *Mion) QUICTransport() *quic.Transport {
+	return m.quicTransport
+}
+
+// ClientReady returns a channel that is closed once the client is initialized// (i.e. m.client has been set in runClient). External callers (e.g. MALON)
+// should wait on this channel before calling StartForwardConnToTUN.
+// For the proxy role the channel is never closed; callers should also select
+// on ctx.Done() to avoid blocking indefinitely.
+func (m *Mion) ClientReady() <-chan struct{} {
+	return m.clientReady
+}
+
+// StartForwardConnToTUN starts a goroutine that reads packets from p.Conn
+// (set via peer.Peer.SetConn) and writes them to TUN.
+// When the connection is closed the goroutine exits silently — no retry is
+// triggered, because the caller (MALON) is responsible for managing the relay
+// connection lifecycle.
+// This is intended for relay connections injected by MALON: after calling
+// peer.Peer.SetConn(relayConn), call this method to activate Conn→TUN forwarding.
+// TUN→Conn forwarding works automatically via AllowedIPs routing without any
+// additional call.
+func (m *Mion) StartForwardConnToTUN(ctx context.Context, p *peer.Peer) {
+	if m.client == nil {
+		log.Printf("[mion] StartForwardConnToTUN: client not initialized (proxy role?)")
+		return
+	}
+	go func() {
+		if err := m.client.ForwardConnToTUN(p); err != nil {
+			log.Printf("[mion] relay conn to peer %s closed: %v", p.DisplayID(), err)
+		}
+	}()
+}
+
 // Close tears down the Mion instance.
+
 func (m *Mion) Close() error {
 	if m.cancel != nil {
 		m.cancel()
@@ -286,8 +352,9 @@ func (m *Mion) runClient(ctx context.Context, certDER []byte) error {
 	}
 
 	c := client.NewClient(m.udpConn, m.peers, m.allowedIPs, m.tun, tlsCfg)
-
-	// Dial all known peers that have endpoints
+	m.client = c
+	m.quicTransport = c.QUICTransport()
+	close(m.clientReady) // signal that m.client is ready for external callers
 	if err := c.DialAllPeers(ctx); err != nil {
 		return fmt.Errorf("mion: dial peers: %w", err)
 	}
@@ -335,6 +402,16 @@ func (m *Mion) runProxy(ctx context.Context, certDER []byte) error {
 	}
 
 	p := proxy.NewProxy(m.cfg.ListenEndpoints, m.peers, m.allowedIPs, m.tun, tlsCfg, m.cfg.Address)
+
+	// Wait for the proxy's quic.Transport to be ready and expose it via QUICTransport().
+	go func() {
+		select {
+		case <-p.TransportReady():
+			m.quicTransport = p.QUICTransport()
+			close(m.proxyReady)
+		case <-m.ctx.Done():
+		}
+	}()
 
 	// Start keepalive manager (requirements §11)
 	ka := keepalive.NewManager(m.peers)

@@ -23,8 +23,8 @@ import (
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/ipc"
 	"github.com/pabotesu/mion/internal/mion"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/platform"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/version"
 )
 

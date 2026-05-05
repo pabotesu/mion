@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	connectip "github.com/quic-go/connect-ip-go"
@@ -24,22 +25,25 @@ import (
 
 	"github.com/pabotesu/mion/config"
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
 // Proxy manages inbound CONNECT-IP sessions from client peers.
 type Proxy struct {
-	endpoints   []config.ListenEndpoint
-	peers       *peer.KnownPeers
-	allowedIPs  *routing.AllowedIPs
-	tun         tunnel.Device
-	tlsConfig   *tls.Config
-	quicConfig  *quic.Config
-	localPrefix netip.Prefix // overlay network prefix (e.g. 100.100.0.0/24)
+	endpoints      []config.ListenEndpoint
+	peers          *peer.KnownPeers
+	allowedIPs     *routing.AllowedIPs
+	tun            tunnel.Device
+	tlsConfig      *tls.Config
+	quicConfig     *quic.Config
+	localPrefix    netip.Prefix // overlay network prefix (e.g. 100.100.0.0/24)
+	quicTransport  *quic.Transport  // set once by the first serveH3 goroutine
+	transportOnce  sync.Once
+	transportReady chan struct{}     // closed when quicTransport is set
 }
 
 // NewProxy creates a new proxy that will listen on the specified endpoints.
@@ -52,12 +56,13 @@ func NewProxy(
 	localPrefix netip.Prefix,
 ) *Proxy {
 	return &Proxy{
-		endpoints:   endpoints,
-		peers:       peers,
-		allowedIPs:  allowedIPs,
-		tun:         tun,
-		tlsConfig:   tlsConfig,
-		localPrefix: localPrefix,
+		endpoints:      endpoints,
+		peers:          peers,
+		allowedIPs:     allowedIPs,
+		tun:            tun,
+		tlsConfig:      tlsConfig,
+		localPrefix:    localPrefix,
+		transportReady: make(chan struct{}),
 		quicConfig: &quic.Config{
 			EnableDatagrams: true,
 			KeepAlivePeriod: 10 * time.Second,
@@ -199,6 +204,20 @@ func (p *Proxy) connectIPH2Handler(w http.ResponseWriter, r *http.Request) {
 	_ = conn.Close()
 }
 
+// QUICTransport returns a channel that is closed once the first HTTP/3 listener
+// has created its quic.Transport. Callers can use the returned channel to wait
+// for readiness, then call QUICTransport to retrieve the transport.
+func (p *Proxy) TransportReady() <-chan struct{} {
+	return p.transportReady
+}
+
+// QUICTransport returns the *quic.Transport used by the first HTTP/3 listener.
+// It returns nil if no HTTP/3 endpoint is configured or before TransportReady
+// is closed.
+func (p *Proxy) QUICTransport() *quic.Transport {
+	return p.quicTransport
+}
+
 // serveH3 starts an HTTP/3 (QUIC) listener for a single endpoint.
 func (p *Proxy) serveH3(ctx context.Context, ep config.ListenEndpoint) error {
 	addr := net.JoinHostPort(ep.Host, fmt.Sprintf("%d", ep.Port))
@@ -212,7 +231,15 @@ func (p *Proxy) serveH3(ctx context.Context, ep config.ListenEndpoint) error {
 	}
 	defer udpConn.Close()
 
-	ln, err := quic.ListenEarly(udpConn, p.tlsConfig, p.quicConfig)
+	tr := &quic.Transport{Conn: udpConn}
+	defer tr.Close()
+	// Store the transport the first time a serveH3 goroutine reaches this point.
+	p.transportOnce.Do(func() {
+		p.quicTransport = tr
+		close(p.transportReady)
+	})
+
+	ln, err := tr.ListenEarly(p.tlsConfig, p.quicConfig)
 	if err != nil {
 		return fmt.Errorf("proxy[h3]: listen QUIC %s: %w", addr, err)
 	}
