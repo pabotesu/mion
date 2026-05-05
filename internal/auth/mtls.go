@@ -12,7 +12,7 @@ import (
 	"fmt"
 
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
+	"github.com/pabotesu/mion/peer"
 )
 
 // PeerIDFromRawCerts extracts the Ed25519 public key from raw DER certificates

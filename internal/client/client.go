@@ -19,10 +19,10 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/http2"
 
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 

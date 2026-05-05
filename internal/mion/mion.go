@@ -16,8 +16,8 @@ import (
 	"github.com/pabotesu/mion/internal/client"
 	"github.com/pabotesu/mion/internal/identity"
 	"github.com/pabotesu/mion/internal/keepalive"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/proxy"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	"github.com/pabotesu/mion/internal/tunnel"
 )

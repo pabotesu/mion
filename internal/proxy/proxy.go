@@ -24,10 +24,10 @@ import (
 
 	"github.com/pabotesu/mion/config"
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
