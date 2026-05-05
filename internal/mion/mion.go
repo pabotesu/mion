@@ -145,6 +145,10 @@ func (m *Mion) AllowedIPs() *routing.AllowedIPs { return m.allowedIPs }
 
 // AddPeer registers a peer and populates the AllowedIPs table.
 func (m *Mion) AddPeer(p *peer.Peer) error {
+	// Auto-derive PeerID from PublicKey if not set by the caller.
+	if p.PublicKey != nil && p.PeerID == (identity.PeerID{}) {
+		p.PeerID = identity.PeerIDFromPublicKey(p.PublicKey)
+	}
 	if err := m.peers.Add(p); err != nil {
 		return err
 	}
