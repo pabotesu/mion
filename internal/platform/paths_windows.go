@@ -13,3 +13,8 @@ func RuntimeDir() string { return `\\.\pipe\mion` }
 func SocketPath(ifname string) string {
 	return `\\.\pipe\mion\` + ifname
 }
+
+// PIDPath returns the PID file path for a given interface name.
+func PIDPath(ifname string) string {
+	return `C:\ProgramData\mion\` + ifname + ".pid"
+}
