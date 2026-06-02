@@ -19,10 +19,10 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 	"golang.org/x/net/http2"
 
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
 	h2transport "github.com/pabotesu/mion/internal/transport/h2"
 	h3transport "github.com/pabotesu/mion/internal/transport/h3"
+	"github.com/pabotesu/mion/peer"
 	"github.com/pabotesu/mion/internal/tunnel"
 )
 
@@ -55,6 +55,13 @@ func NewClient(udpConn *net.UDPConn, peers *peer.KnownPeers, allowedIPs *routing
 			MaxIdleTimeout:  15 * time.Second,
 		},
 	}
+}
+
+// QUICTransport returns the shared QUIC transport used for all outbound dials.
+// External callers (e.g. MALON) can use this to register additional ALPN listeners
+// on the same UDP socket via transport.Listen().
+func (c *Client) QUICTransport() *quic.Transport {
+	return c.transport
 }
 
 // DialPeer establishes a CONNECT-IP session with a single peer (proxy).

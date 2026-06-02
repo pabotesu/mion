@@ -189,15 +189,29 @@ mion show mi0n
 
 ```
 interface: mi0n
-  listening port: 58719
+  role: client
+  listening HTTP3 port: 58719
 
 peer:
   public key: XdtOcXazRY7wd3SemdDFaIOJwJn7ntP74pOl4yXOD1s=
   peer id: KhWP2nvDdIVE3fvHgOqLFsaVi8xsLoSBpE1E214rVkA=
-  endpoint: 203.0.113.1:4443
+  endpoint: http3://203.0.113.1:4443
   allowed ips: 100.100.0.3/32, 100.100.0.2/32
-  persistent keepalive: every 25 seconds
-  active: 1
+  active: yes
+```
+
+proxy 側の出力例:
+
+```
+interface: mi0n
+  role: proxy
+  listening endpoints: http3://:4443, http2://:4443
+
+peer:
+  public key: tTxCTUab...
+  peer id: yC8wOx...
+  allowed ips: 100.100.0.1/32
+  active: yes
 ```
 
 ## 停止
@@ -272,9 +286,9 @@ sequenceDiagram
 
 | 機能 | 説明 |
 |---|---|
-| **Keepalive (HTTP/3)** | QUIC レベルの `KeepAlivePeriod`（25秒）で NAT state を維持 |
-| **Keepalive (HTTP/2)** | 空カプセル（0バイト）を定期送信して TCP セッションを維持 |
-| **死亡検知・自動再接続** | 50秒無応答で接続を切断し、指数バックオフ（2s〜30s）で自動リトライ |
+| **Keepalive (HTTP/3)** | QUIC レベルの `KeepAlivePeriod`（10秒）と `MaxIdleTimeout`（15秒）で NAT state 維持・死亡検知 |
+| **Keepalive (HTTP/2)** | 空カプセル（Ping/Pong）を10秒ごとに送受信して TCP セッションを維持。5秒以内に Pong がなければ即切断 |
+| **死活検知・自動再接続** | HTTP/3: 最大15秒、HTTP/2: 最大15秒で検知。切断後は即時リトライ → 指数バックオフ（2s〜30s）で自動再接続 |
 | **ランタイム切り替え** | `mion set` で HTTP/3 ↔ HTTP/2 をパケットロスなしで切り替え可 |
 
 ## テスト
@@ -289,7 +303,7 @@ go test ./...
 - [x] **Phase 2**: 接続維持 — Keepalive、自動再接続
 - [x] **Phase 3**: 接続安定化 — Linux 実機での TUN/ping 検証、Proxy 再起動時の自動復帰確認
 - [x] **Phase 4**: macOS 対応 — utun デバイスによる macOS でのフル動作確認
-- [x] **Phase 5**: HTTP/2 対応 — TLS/TCP 上の CONNECT-IP トンネル、HTTP/3 ↔ HTTP/2 ランタイム切り替え検証
+- [x] **Phase 6**: 接続安定化・高速復帰 — keepalive Ping/Pong、HTTP/3 MaxIdleTimeout、初回リトライ即時化、QUIC 0-RTT、`mion show` 表示改善
 
 ## 今後の課題
 

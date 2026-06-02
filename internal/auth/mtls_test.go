@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
+	"github.com/pabotesu/mion/peer"
 )
 
 func TestNewClientTLSConfig(t *testing.T) {

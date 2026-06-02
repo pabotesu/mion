@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
 	"github.com/pabotesu/mion/internal/routing"
+	"github.com/pabotesu/mion/peer"
 )
 
 type mockState struct {

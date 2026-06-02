@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/transport"
+	"github.com/pabotesu/mion/transport"
 )
 
 // Peer represents a known peer in the MION network.

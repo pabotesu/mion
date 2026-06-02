@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/pabotesu/mion/internal/identity"
-	"github.com/pabotesu/mion/internal/peer"
+	"github.com/pabotesu/mion/peer"
 )
 
 // keepaliveInterval is the fixed interval for sending HTTP/2 keepalive capsules.
